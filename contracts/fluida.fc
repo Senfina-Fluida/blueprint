@@ -1,0 +1,189 @@
+#include "imports/stdlib.fc";
+
+;; Constants & Error Codes
+const OP_CREATE_SWAP = 305419896;    ;; decimal for 0x12345678
+const OP_COMPLETE_SWAP = 2271560481; ;; decimal for 0x87654321
+const OP_REFUND_SWAP = 2882400018;   ;; decimal for 0xabcdef12
+
+const ERR_INVALID_AMOUNT = 65521;     ;; 0xfff1
+const ERR_INVALID_TIMELOCK = 65522;   ;; 0xfff2
+const ERR_SWAP_COMPLETED = 65523;     ;; 0xfff3
+const ERR_INVALID_PREIMAGE = 65524;   ;; 0xfff4
+const ERR_TIMELOCK_EXPIRED = 65525;   ;; 0xfff5
+const ERR_SWAP_ALREADY_COMPLETED_REFUND = 65526; ;; 0xfff6
+const ERR_TIMELOCK_NOT_EXPIRED = 65527;   ;; 0xfff7
+const ERR_INVALID_OPERATION = 65535;   ;; 0xffff
+const ERR_SWAP_NOT_FOUND = 65520;     ;; extra error for missing swaps
+
+;; Global Variables (persistent storage)
+global slice tgBTCAddress;
+global int swapCounter;
+global cell swaps;
+
+;; Helper: compute sha256 of a 256-bit integer
+int sha256_int256(int x) inline {
+    builder b = begin_cell();
+    b = b.store_uint(x, 256);
+    cell c = b.end_cell();
+    return cell_hash(c);
+}
+
+;; Helpers to serialize/deserialize a Swap record
+builder buildSwap(
+    slice initiator,
+    slice recipient,
+    int amount,
+    int hashLock,
+    int timeLock,
+    int isCompleted
+) inline {
+    return begin_cell()
+        .store_slice(initiator)
+        .store_slice(recipient)
+        .store_coins(amount)
+        .store_uint(hashLock, 256)
+        .store_uint(timeLock, 64)
+        .store_uint(isCompleted, 1);
+}
+
+(slice, slice, int, int, int, int) parseSwap(slice s) inline {
+    return (
+        s~load_msg_addr(),    ;; initiator
+        s~load_msg_addr(),    ;; recipient
+        s~load_coins(),       ;; amount
+        s~load_uint(256),     ;; hashLock
+        s~load_uint(64),      ;; timeLock
+        s~load_uint(1)        ;; isCompleted
+    );
+}
+
+;; Function declarations
+() createSwap(slice in_msg_body) impure;
+() completeSwap(slice in_msg_body) impure;
+() refundSwap(slice in_msg_body) impure;
+
+;; The main entry point function
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return (); ;; Ignore empty messages
+    }
+
+    int op = in_msg_body~load_uint(32);
+
+    if (op == OP_CREATE_SWAP) {
+        createSwap(in_msg_body);
+    } 
+    elseif (op == OP_COMPLETE_SWAP) {
+        completeSwap(in_msg_body);
+    }
+    elseif (op == OP_REFUND_SWAP) {
+        refundSwap(in_msg_body);
+    }
+    else {
+        throw(ERR_INVALID_OPERATION);
+    }
+}
+
+() createSwap(slice in_msg_body) impure {
+    slice initiator = in_msg_body~load_msg_addr();
+    slice recipient = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_coins();
+    int hashLock = in_msg_body~load_uint(256);
+    int timeLock = in_msg_body~load_uint(64);
+
+    if (amount <= 0) {
+        throw(ERR_INVALID_AMOUNT);
+    }
+    
+    if (timeLock <= now()) {
+        throw(ERR_INVALID_TIMELOCK);
+    }
+
+    int swapId = swapCounter;
+    swapCounter += 1;
+
+    builder swap = buildSwap(initiator, recipient, amount, hashLock, timeLock, 0);
+    swaps~udict_set(256, swapId, swap.end_cell().begin_parse());
+
+    ;; Emit event using raw message
+    var msg = begin_cell()
+        .store_uint(swapId, 256)
+        .store_slice("SwapCreated");
+    send_raw_message(msg.end_cell(), 0);
+}
+
+() completeSwap(slice in_msg_body) impure {
+    int swapId = in_msg_body~load_uint(256);
+    int preimage = in_msg_body~load_uint(256);
+
+    (slice swapData, int found) = swaps.udict_get?(256, swapId);
+    throw_unless(ERR_SWAP_NOT_FOUND, found);
+
+    var (initiator, recipient, amount,
+         hashLock, timeLock, isCompleted) = parseSwap(swapData);
+
+    throw_if(ERR_SWAP_COMPLETED, isCompleted);
+    throw_unless(ERR_INVALID_PREIMAGE, sha256_int256(preimage) == hashLock);
+    throw_if(ERR_TIMELOCK_EXPIRED, now() >= timeLock);
+
+    ;; Mark as completed
+    builder new_swap = buildSwap(initiator, recipient, amount, hashLock, timeLock, 1);
+    swaps~udict_set(256, swapId, new_swap.end_cell().begin_parse());
+
+    ;; Transfer tokens
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(tgBTCAddress)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(
+            begin_cell()
+                .store_uint(0x7362d09c, 32)  ;; transfer operation
+                .store_slice(recipient)
+                .store_coins(amount)
+                .end_cell()
+        );
+
+    send_raw_message(msg.end_cell(), 64);  ;; mode 64 = carry remaining value
+
+    ;; Emit event using raw message
+    var event_msg = begin_cell()
+        .store_uint(swapId, 256)
+        .store_slice("SwapCompleted");
+    send_raw_message(event_msg.end_cell(), 0);
+}
+
+() refundSwap(slice in_msg_body) impure {
+    int swapId = in_msg_body~load_uint(256);
+
+    (slice swapData, int found) = swaps.udict_get?(256, swapId);
+    throw_unless(ERR_SWAP_NOT_FOUND, found);
+
+    var (initiator, recipient, amount,
+         hashLock, timeLock, isCompleted) = parseSwap(swapData);
+
+    throw_if(ERR_SWAP_ALREADY_COMPLETED_REFUND, isCompleted);
+    throw_if(ERR_TIMELOCK_NOT_EXPIRED, now() < timeLock);
+
+    ;; Transfer tokens back to initiator
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(tgBTCAddress)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(
+            begin_cell()
+                .store_uint(0x7362d09c, 32)  ;; transfer operation
+                .store_slice(initiator)
+                .store_coins(amount)
+                .end_cell()
+        );
+
+    send_raw_message(msg.end_cell(), 64);  ;; mode 64 = carry remaining value
+
+    ;; Emit event using raw message
+    var event_msg = begin_cell()
+        .store_uint(swapId, 256)
+        .store_slice("SwapRefunded");
+    send_raw_message(event_msg.end_cell(), 0);
+}
