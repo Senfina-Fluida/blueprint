@@ -1,0 +1,107 @@
+#pragma version >=0.2.0;
+#include "imports/stdlib.fc";
+
+;; Storage TL-B:
+;; storage#_ total_supply:Coins owner:MsgAddress balances:(HashmapE 267 Coins) = Storage;
+
+(int, slice, cell) load_data() {
+    var ds = get_data().begin_parse();
+    return (
+        ds~load_coins(), ;; total_supply
+        ds~load_msg_addr(), ;; owner
+        ds~load_dict() ;; balances
+    );
+}
+
+() save_data(int total_supply, slice owner, cell balances) impure {
+    set_data(begin_cell()
+        .store_coins(total_supply)
+        .store_slice(owner)
+        .store_dict(balances)
+        .end_cell());
+}
+
+() mint(slice to, int amount) impure {
+    var (total_supply, owner, balances) = load_data();
+    
+    ;; Only owner can mint
+    var sender = my_address();
+    throw_unless(73, sender.slice_hash() == owner.slice_hash());
+    throw_unless(74, amount > 0);
+
+    ;; Update recipient balance
+    var receiver_addr = to;
+    
+    var (current_balance, found?) = udict_get?(balances, 267, slice_hash(receiver_addr));
+    int balance = found? ? current_balance~load_coins() : 0;
+    
+    cell new_balance = begin_cell().store_coins(balance + amount).end_cell();
+    balances~udict_set_ref(267, slice_hash(receiver_addr), new_balance);
+    
+    ;; Update total supply
+    total_supply += amount;
+    
+    save_data(total_supply, owner, balances);
+}
+
+() transfer(slice to, int amount) impure {
+    var (total_supply, owner, balances) = load_data();
+    
+    var sender = my_address();
+    var (sender_balance_cell, found?) = udict_get?(balances, 267, slice_hash(sender));
+    throw_unless(76, found?);
+    int sender_balance = sender_balance_cell~load_coins();
+    throw_unless(75, sender_balance >= amount);
+    
+    ;; Update sender balance
+    cell new_sender_balance = begin_cell().store_coins(sender_balance - amount).end_cell();
+    balances~udict_set_ref(267, slice_hash(sender), new_sender_balance);
+    
+    ;; Update recipient balance
+    var (receiver_balance_cell, rcv_found?) = udict_get?(balances, 267, slice_hash(to));
+    int receiver_balance = rcv_found? ? receiver_balance_cell~load_coins() : 0;
+    
+    cell new_receiver_balance = begin_cell().store_coins(receiver_balance + amount).end_cell();
+    balances~udict_set_ref(267, slice_hash(to), new_receiver_balance);
+    
+    save_data(total_supply, owner, balances);
+}
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) { ;; ignore empty messages
+        return ();
+    }
+    
+    int op = in_msg_body~load_uint(32);
+    
+    if (op == 1) { ;; mint operation
+        slice to = in_msg_body~load_msg_addr();
+        int amount = in_msg_body~load_coins();
+        mint(to, amount);
+        return ();
+    }
+    
+    if (op == 2) { ;; transfer operation
+        slice to = in_msg_body~load_msg_addr();
+        int amount = in_msg_body~load_coins();
+        transfer(to, amount);
+        return ();
+    }
+    
+    throw(0xffff); ;; unsupported operation
+}
+
+;; Get methods
+int get_total_supply() method_id {
+    var (total_supply, _, _) = load_data();
+    return total_supply;
+}
+
+int balance(slice address) method_id {
+    var (_, _, balances) = load_data();
+    var (balance_cell, found?) = udict_get?(balances, 267, slice_hash(address));
+    if (found?) {
+        return balance_cell~load_coins();
+    }
+    return 0;
+}
