@@ -10,7 +10,7 @@ export async function run(provider: NetworkProvider) {
   const fluida = provider.open(new Fluida(fluidaAddress));
 
   // Define swap parameters (recipient removed, the contract uses the sender's address)
-  const amount = 3000n; // Example: 1000 tokens
+  const amount = 11000n; // Example: 1000 tokens
   // Dummy hashLock; in a real scenario, compute the hash of a secret preimage.
   const hashLock = 1234567890123456789012345678901234567890n;
   // Set a timelock 1 hour in the future
@@ -22,7 +22,7 @@ export async function run(provider: NetworkProvider) {
     amount,
     hashLock,
     timeLock,
-    value: toNano('0.05'),
+    value: toNano('0.005'),
   });
   console.log('Create swap transaction sent.');
 }
