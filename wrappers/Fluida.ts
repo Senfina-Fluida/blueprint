@@ -55,7 +55,6 @@ import {
       provider: ContractProvider,
       via: Sender,
       opts: {
-        recipient: Address;
         amount: bigint;
         hashLock: bigint;
         timeLock: bigint;
@@ -63,19 +62,28 @@ import {
       }
     ): Promise<void> {
       const OP_CREATE_SWAP = 305419896n; // 0x12345678
+      
+      console.log("### VIA ADDRESS", via.address)
       await provider.internal(via, {
         value: opts.value,
         sendMode: SendMode.PAY_GAS_SEPARATELY,
         body: beginCell()
           .storeUint(OP_CREATE_SWAP, 32)
-          .storeAddress(via.address!)
-          .storeAddress(opts.recipient)
-          .storeCoins(opts.amount)
-          .storeUint(opts.hashLock, 256)
-          .storeUint(opts.timeLock, 64)
+          .storeAddress(via.address!)          // Explicitly store the sender’s address
+          .storeCoins(opts.amount)             // Store coins (using TON’s special encoding)
+          .storeRef(                          // Extra data stored in a referenced cell:
+            beginCell()
+              .storeUint(opts.hashLock, 256)   // 256-bit hashLock
+              .storeUint(opts.timeLock, 64)    // 64-bit timeLock
+              .endCell()
+          )
           .endCell(),
       });
     }
+    
+    
+    
+    
   
     async sendCompleteSwap(
       provider: ContractProvider,

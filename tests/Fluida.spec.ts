@@ -12,7 +12,7 @@ describe('Fluida', () => {
 
     beforeAll(async () => {
         console.log('🔧 Compiling Fluida contract...');
-        code = await compile('Fluida'); 
+        code = await compile('Fluida');
         console.log('✅ Compilation successful.');
     });
 
@@ -106,16 +106,13 @@ describe('Fluida', () => {
     it('should create new swap', async () => {
         console.log('🧪 Running "should create new swap" test...');
 
-        // We'll use new treasury wallets as initiator and recipient
-        const initiator = await blockchain.treasury('initiator');
-        const recipient = await blockchain.treasury('recipient');
-
-        console.log(`👤 Initiator address: ${initiator.address}`);
-        console.log(`👥 Recipient address: ${recipient.address}`);
+        // Use a single treasury wallet as the sender (acting as both initiator and recipient)
+        const sender = await blockchain.treasury('initiator');
+        console.log(`👤 Sender address: ${sender.address}`);
 
         const amount = toNano('1.0');
         // Some arbitrary 256-bit preimage
-        const preimage = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn; 
+        const preimage = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn;
         const hashLock = computeHashLock(preimage);
         console.log(`🔒 Computed hashLock: ${hashLock}`);
 
@@ -123,10 +120,9 @@ describe('Fluida', () => {
         const currentTime = BigInt(Math.floor(Date.now() / 1000));
         const timeLock = currentTime + 3600n;
 
-        // Create the swap
+        // Create the swap (only the sender's address is used)
         console.log('📤 Sending CreateSwap transaction...');
-        await fluida.sendCreateSwap(initiator.getSender(), {
-            recipient: recipient.address,
+        await fluida.sendCreateSwap(sender.getSender(), {
             amount,
             hashLock,
             timeLock,
@@ -134,9 +130,10 @@ describe('Fluida', () => {
         });
         console.log('📤 CreateSwap transaction sent successfully.');
 
-        // Verify by reading the last swap ID
-        console.log('🔍 Verifying swap creation by retrieving the last swap ID...');
-        const swapId = await fluida.getLastSwapId();
+        // Verify by reading the swap counter
+        console.log('🔍 Verifying swap creation by retrieving the swap counter...');
+        const swapCounter = await fluida.getSwapCounter();
+        const swapId = swapCounter - 1n; // Last swap ID is counter - 1
         console.log(`🔍 Retrieved swap ID: ${swapId}`);
 
         // Get swap details
@@ -144,9 +141,9 @@ describe('Fluida', () => {
         const swap = await fluida.getSwap(swapId);
         console.log('🔍 Swap details:', swap);
 
-        // Basic assertions
-        expect(swap.initiator.equals(initiator.address)).toBe(true);
-        expect(swap.recipient.equals(recipient.address)).toBe(true);
+        // Basic assertions: both initiator and recipient should equal the sender's address
+        expect(swap.initiator.equals(sender.address)).toBe(true);
+        expect(swap.recipient.equals(sender.address)).toBe(true);
         expect(swap.amount).toBe(amount);
         expect(swap.hashLock).toBe(hashLock);
         expect(swap.timeLock).toBe(timeLock);
@@ -172,16 +169,15 @@ describe('Fluida', () => {
         // 1) Create Swap first
         console.log('📤 Sending CreateSwap transaction...');
         await fluida.sendCreateSwap(initiator.getSender(), {
-            recipient: recipient.address,
             amount,
             hashLock,
             timeLock,
             value: toNano('0.05'),
         });
         console.log('📤 CreateSwap transaction sent successfully.');
-
-        // 2) Retrieve swapId (should be 0 if it's the first swap)
-        const swapId = await fluida.getLastSwapId();
+        // 2) Retrieve swapId by getting the swap counter
+        const swapCounter = await fluida.getSwapCounter();
+        const swapId = swapCounter - 1n; // Last swap ID is counter - 1
         console.log(`🔍 Created Swap ID: ${swapId}`);
 
         // 3) Complete the swap
