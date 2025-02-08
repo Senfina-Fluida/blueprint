@@ -197,31 +197,83 @@ int has_swap(int swapId) method_id {
     save_data(tgBTCAddress, swapCounter + 1, swaps);
 }
 
-
-
 () completeSwap(slice in_msg_body) impure {
+    ~strdump("COMPLETE SWAP - ENTER");
+
     var (tgBTCAddress, swapCounter, swaps) = load_data();
     
+    ;; Read swapId and preimage from the message
     int swapId = in_msg_body~load_uint(256);
     int preimage = in_msg_body~load_uint(256);
+    
+    ~strdump("SwapId received:");
+    ~dump(swapId);
+    ~strdump("Preimage received:");
+    ~dump(preimage);
 
+    ;; Retrieve the swap data
     var (swapData, found) = swaps.udict_get?(256, swapId);
+    if (found == 0) {
+        ~strdump("ERROR: Swap not found for swapId:");
+        ~dump(swapId);
+    }
     throw_unless(ERR_SWAP_NOT_FOUND, found);
-
+    
+    ;; Parse the swap record details
     var (initiator, recipient, amount,
          hashLock, timeLock, isCompleted) = parseSwap(swapData);
 
+    ~strdump("Swap details:");
+    ~strdump("Initiator:");
+    ~dump(initiator);
+    ~strdump("Recipient:");
+    ~dump(recipient);
+    ~strdump("Amount:");
+    ~dump(amount);
+    ~strdump("Stored hashLock:");
+    ~dump(hashLock);
+    ~strdump("TimeLock:");
+    ~dump(timeLock);
+    ~strdump("IsCompleted:");
+    ~dump(isCompleted);
+
+    ;; Check that the swap has not been completed yet
+    if (isCompleted) {
+        ~strdump("ERROR: Swap already completed");
+    }
     throw_if(ERR_SWAP_COMPLETED, isCompleted);
-    throw_unless(ERR_INVALID_PREIMAGE, sha256_int256(preimage) == hashLock);
+    
+    ;; Calculate the hash from the received preimage to verify it matches the stored hashLock
+    int calculatedHash = sha256_int256(preimage);
+    ~strdump("Calculated hash from preimage:");
+    ~dump(calculatedHash);
+    if (calculatedHash != hashLock) {
+        ~strdump("ERROR: Invalid preimage. Expected hashLock:");
+        ~dump(hashLock);
+        ~strdump("but calculated:");
+        ~dump(calculatedHash);
+    }
+    throw_unless(ERR_INVALID_PREIMAGE, calculatedHash == hashLock);
+    
+    ;; Check that the timelock has not expired
+    if (now() >= timeLock) {
+       ~strdump("ERROR: Timelock expired. Now:");
+       ~dump(now());
+       ~strdump("TimeLock:");
+       ~dump(timeLock);
+    }
     throw_if(ERR_TIMELOCK_EXPIRED, now() >= timeLock);
 
-    ;; Mark as completed
+    ~strdump("Marking swap as completed");
+    ;; Mark the swap as completed
     builder newSwap = buildSwap(initiator, recipient, amount, hashLock, timeLock, 1);
     swaps~udict_set(256, swapId, newSwap.end_cell().begin_parse());
     
+    ;; Save the updated state
     save_data(tgBTCAddress, swapCounter, swaps);
+    ~strdump("Swap marked as completed and data saved");
 
-    ;; Transfer tokens
+    ;; Sending the token transfer message
     var msg = begin_cell()
         .store_uint(0x18, 6)
         .store_slice(tgBTCAddress)
@@ -235,6 +287,7 @@ int has_swap(int swapId) method_id {
                 .end_cell()
         );
     send_raw_message(msg.end_cell(), 64);
+    ~strdump("Token transfer message sent");
 }
 
 () refundSwap(slice in_msg_body) impure {
