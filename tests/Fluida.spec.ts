@@ -2,30 +2,30 @@
 // File: tests/Fluida.spec.ts
 // -----------------------------------------------------------------
 import { Blockchain, SandboxContract, TreasuryContract } from '@ton/sandbox';
-import { Cell, toNano, Address, Dictionary, beginCell } from '@ton/core';
+import { Cell, toNano, Address, Dictionary, beginCell, internal } from '@ton/core';
 import { Fluida } from '../wrappers/Fluida';
+import { JettonWallet } from '../wrappers/JettonWallet';
 import '@ton/test-utils';
 import { compile } from '@ton/blueprint';
-import { FakeJetton } from '../wrappers/FakeJetton';
 
-describe('Fluida', () => {
+describe.only('Fluida', () => {
     let fluidaCode: Cell;
-    let fakeJettonCode: Cell;
+    let jettonWalletCode: Cell;
 
     beforeAll(async () => {
         console.log('🔧 Compiling Fluida contract...');
         fluidaCode = await compile('Fluida');
         console.log('✅ Fluida compilation successful.');
-        console.log('🔧 Compiling FakeJetton contract...');
-        fakeJettonCode = await compile('FakeJetton');
-        console.log('✅ FakeJetton compilation successful.');
+        console.log('🔧 Compiling JettonWallet contract...');
+        jettonWalletCode = await compile('JettonWallet');
+        console.log('✅ JettonWallet compilation successful.');
     });
 
     let blockchain: Blockchain;
     let deployer: SandboxContract<TreasuryContract>;
     let fluida: SandboxContract<Fluida>;
-    let tgBTC: SandboxContract<FakeJetton>;
-    let tgBTCAddress: Address;
+    let jettonWallet: SandboxContract<JettonWallet>;
+    let jettonWalletAddress: Address;
 
     /**
      * Converts a Buffer to a bigint assuming big-endian order.
@@ -59,20 +59,25 @@ describe('Fluida', () => {
         deployer = await blockchain.treasury('deployer');
         console.log(`👤 Deployer address: ${deployer.address}`);
 
-        // Create a FakeJetton contract for tgBTC (jetton master) using our wrapper.
-        tgBTC = blockchain.openContract(
-            FakeJetton.createFromConfig({ initialSupply: toNano('1000.0') }, fakeJettonCode)
+        // Deploy the JettonWallet contract.
+        // For testing, we deploy the wallet with a temporary configuration.
+        // In production the wallet’s owner should be set to the Fluida contract address.
+        jettonWallet = blockchain.openContract(
+            JettonWallet.createFromConfig(
+                {
+                    balance: toNano('0.0'),
+                    owner: deployer.address,       // temporary owner
+                    jettonMaster: deployer.address, // example configuration
+                },
+                jettonWalletCode
+            )
         );
-        tgBTCAddress = tgBTC.address;
-        console.log(`💰 tgBTC (FakeJetton) address: ${tgBTCAddress}`);
+        jettonWalletAddress = jettonWallet.address;
+        console.log(`💰 JettonWallet address: ${jettonWalletAddress}`);
 
-        // Fund tgBTC with some TON from deployer (if needed for processing)
-        console.log(`💸 Sending 10 TON from deployer to tgBTC (${tgBTCAddress})...`);
-        await deployer.getSender().send({
-            to: tgBTCAddress,
-            value: toNano('10.0')
-        });
-        console.log('💸 Funds sent to tgBTC successfully.');
+        // Deploy the JettonWallet contract.
+        await jettonWallet.sendDeploy(deployer.getSender(), toNano('0.05'));
+        console.log('✅ JettonWallet deployed successfully.');
 
         // Create an empty dictionary for swaps using 256-bit keys.
         const emptySwaps = Dictionary.empty<bigint, {
@@ -84,11 +89,11 @@ describe('Fluida', () => {
             isCompleted: boolean;
         }>(Dictionary.Keys.BigInt(256));
 
-        // Initialize Fluida contract from config, using tgBTCAddress as the jetton master address.
+        // Initialize Fluida contract from config using the JettonWallet address.
         fluida = blockchain.openContract(
             Fluida.createFromConfig(
                 {
-                    tgBTCAddress,
+                    jettonWallet: jettonWalletAddress,
                     swapCounter: 0n,
                     swaps: emptySwaps,
                 },
@@ -96,7 +101,7 @@ describe('Fluida', () => {
             )
         );
 
-        // Deploy Fluida contract
+        // Deploy Fluida contract.
         await fluida.sendDeploy(deployer.getSender(), toNano('0.05'));
         console.log('✅ Fluida contract deployed successfully.');
 
@@ -109,47 +114,54 @@ describe('Fluida', () => {
         console.log('✅ "should deploy" test passed.');
     });
 
-    it('should create new swap and update jetton balances accordingly', async () => {
-        console.log('🧪 Running "should create new swap" test with balance checks...');
+    it('should process deposit notification and create new swap', async () => {
+        console.log('🧪 Running "should process deposit notification and create new swap" test...');
 
-        // Use a treasury wallet as the sender (acting as both initiator and recipient)
+        // Use a treasury wallet as the depositor for the deposit notification payload.
+        // In production, the depositor's tokens would be forwarded by the JettonWallet.
         const sender = await blockchain.treasury('initiator');
-        console.log(`👤 Sender address: ${sender.address}`);
+        console.log(`👤 Sender address (depositor): ${sender.address}`);
 
-        // Cast tgBTC to FakeJetton so we can call getBalance.
-        const fakeJetton = tgBTC as unknown as FakeJetton;
+        // Token amount to deposit.
+        const amount = toNano('1.0');
 
-        // Get a provider instance using tgBTC's address.
-        const providerInstance = blockchain.provider(tgBTCAddress);
-
-        // Get initial jetton token balances for the sender and the Fluida contract.
-        const initialUserBalance = await fakeJetton.getBalance(providerInstance, sender.address);
-        const initialContractBalance = await fakeJetton.getBalance(providerInstance, fluida.address);
-
-        console.log(`🔍 Initial sender token balance: ${initialUserBalance}`);
-        console.log(`🔍 Initial Fluida contract token balance: ${initialContractBalance}`);
-
-        const amount = toNano('1.0'); // Token amount to transfer
-        // Some arbitrary 256-bit preimage
+        // Some arbitrary 256-bit preimage.
         const preimage = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn;
         const hashLock = computeHashLock(preimage);
         console.log(`🔒 Computed hashLock: ${hashLock}`);
 
-        // Make a timeLock for 1 hour in the future.
+        // Set a timeLock for 1 hour in the future.
         const currentTime = BigInt(Math.floor(Date.now() / 1000));
         const timeLock = currentTime + 3600n;
 
-        // Create the swap (using sender's address for both initiator and recipient)
-        console.log('📤 Sending CreateSwap transaction...');
-        await fluida.sendCreateSwap(sender.getSender(), {
-            amount,
-            hashLock,
-            timeLock,
-            value: toNano('1.05'),
-        });
-        console.log('📤 CreateSwap transaction sent successfully.');
+        // Build a deposit notification payload.
+        // The expected layout is:
+        //   [ op code (32 bits), depositAmount (128-bit), depositor address,
+        //     hashLock (256-bit), timeLock (64-bit) ]
+        const OP_DEPOSIT_NOTIFICATION = 0xDEADBEEFn;
+        const depositNotificationPayload = beginCell()
+            .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
+            .storeUint(amount, 128)
+            .storeAddress(sender.address) // depositor address
+            .storeUint(hashLock, 256)
+            .storeUint(timeLock, 64)
+            .endCell();
 
-        // Verify by reading the swap counter and swap details.
+        // Build the internal message that the JettonWallet will send.
+        const depositMsg = internal({
+            to: fluida.address,
+            value: toNano('0.05'),
+            body: depositNotificationPayload,
+        }) as any;
+
+        // Patch the message so that its info.src is set to the JettonWallet's address.
+        depositMsg.info.src = jettonWalletAddress;
+
+        // Send the message.
+        await blockchain.sendMessage(depositMsg);
+        console.log('📤 Deposit notification sent successfully.');
+
+        // Verify that a new swap record has been created.
         console.log('🔍 Verifying swap creation by retrieving the swap counter...');
         const swapCounter = await fluida.getSwapCounter();
         const swapId = swapCounter - 1n; // Last swap ID is counter - 1
@@ -167,20 +179,8 @@ describe('Fluida', () => {
         expect(swap.timeLock).toBe(timeLock);
         expect(swap.isCompleted).toBe(false);
 
-        // Check token balances after swap creation.
-        const finalUserBalance = await fakeJetton.getBalance(providerInstance, sender.address);
-        const finalContractBalance = await fakeJetton.getBalance(providerInstance, fluida.address);
-
-        console.log(`🔍 Final sender token balance: ${finalUserBalance}`);
-        console.log(`🔍 Final Fluida contract token balance: ${finalContractBalance}`);
-
-        // Assert that the sender's token balance decreased by the swap amount...
-        expect(finalUserBalance).toBe(initialUserBalance - amount);
-        // ...and the Fluida contract's token balance increased by that same amount.
-        expect(finalContractBalance).toBe(initialContractBalance + amount);
-
-        console.log('🧪 "should create new swap" test passed.');
+        console.log('🧪 "should process deposit notification and create new swap" test passed.');
     });
 
-    // Further tests (e.g., completeSwap) can be added below.
+    // Further tests (e.g., completeSwap, refundSwap) can be added below.
 });

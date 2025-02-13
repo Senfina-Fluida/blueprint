@@ -11,7 +11,7 @@ import {
 } from '@ton/core';
 
 export type FluidaConfig = {
-  tgBTCAddress: Address; // This is the jetton master address
+  jettonWallet: Address; // Updated: now the jetton wallet contract address
   swapCounter: bigint;
   swaps: Dictionary<bigint, {
     initiator: Address;
@@ -31,7 +31,7 @@ export class Fluida implements Contract {
 
   static createFromConfig(config: FluidaConfig, code: Cell): Fluida {
     const data = beginCell()
-      .storeAddress(config.tgBTCAddress)
+      .storeAddress(config.jettonWallet)
       .storeUint(config.swapCounter, 64)
       .storeDict(config.swaps)
       .endCell();
@@ -73,13 +73,13 @@ export class Fluida implements Contract {
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
         .storeUint(dummyOpCode, 32)
-        .storeAddress(via.address!)             // tokenSender (must equal tgBTCAddress)
-        .storeUint(opts.amount, 128)            // token amount as 128-bit
+        .storeAddress(via.address!)             // tokenSender (should match the jetton wallet)
+        .storeUint(opts.amount, 128)            // token amount (128-bit)
         .storeAddress(via.address!)             // remainingGasTo (using same address for testing)
         .storeRef(
           beginCell()
             .storeUint(opts.hashLock, 256)      // hashLock (256-bit)
-            .storeUint(opts.timeLock, 64)       // timeLock (64-bit)
+            .storeUint(opts.timeLock, 64)         // timeLock (64-bit)
             .endCell()
         )
         .endCell(),
@@ -131,9 +131,9 @@ export class Fluida implements Contract {
     return result.stack.readBigNumber();
   }
 
-  // Getter name remains getTgBTCAddress as requested.
-  async getTgBTCAddress(provider: ContractProvider): Promise<Address> {
-    const result = await provider.get('get_tgbtc_address', []);
+  // Updated getter: now returns the jetton wallet address.
+  async getJettonWallet(provider: ContractProvider): Promise<Address> {
+    const result = await provider.get('get_jetton_wallet', []);
     return result.stack.readAddress();
   }
 

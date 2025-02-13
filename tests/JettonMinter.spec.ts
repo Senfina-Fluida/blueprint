@@ -1,32 +1,32 @@
 import { Blockchain, SandboxContract, TreasuryContract } from '@ton/sandbox';
 import { Cell, toNano } from '@ton/core';
-import { FakeJetton } from '../wrappers/FakeJetton';
+import { JettonMinter } from '../wrappers/JettonMinter';
 import '@ton/test-utils';
 import { compile } from '@ton/blueprint';
 
-describe('FakeJetton', () => {
+describe('JettonMinter', () => {
     let code: Cell;
 
     beforeAll(async () => {
-        code = await compile('FakeJetton');
+        code = await compile('JettonMinter');
     });
 
     let blockchain: Blockchain;
     let deployer: SandboxContract<TreasuryContract>;
-    let fakeJetton: SandboxContract<FakeJetton>;
+    let jettonMinter: SandboxContract<JettonMinter>;
 
     beforeEach(async () => {
         blockchain = await Blockchain.create();
 
-        fakeJetton = blockchain.openContract(FakeJetton.createFromConfig({}, code));
+        jettonMinter = blockchain.openContract(JettonMinter.createFromConfig({}, code));
 
         deployer = await blockchain.treasury('deployer');
 
-        const deployResult = await fakeJetton.sendDeploy(deployer.getSender(), toNano('0.05'));
+        const deployResult = await jettonMinter.sendDeploy(deployer.getSender(), toNano('0.05'));
 
         expect(deployResult.transactions).toHaveTransaction({
             from: deployer.address,
-            to: fakeJetton.address,
+            to: jettonMinter.address,
             deploy: true,
             success: true,
         });
@@ -34,6 +34,6 @@ describe('FakeJetton', () => {
 
     it('should deploy', async () => {
         // the check is done inside beforeEach
-        // blockchain and fakeJetton are ready to use
+        // blockchain and jettonMinter are ready to use
     });
 });

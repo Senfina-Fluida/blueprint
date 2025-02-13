@@ -1,22 +1,22 @@
 import { Address, beginCell, Cell, Contract, contractAddress, ContractProvider, Sender, SendMode } from '@ton/core';
 
-export type TestConfig = {};
+export type JettonWalletConfig = {};
 
-export function testConfigToCell(config: TestConfig): Cell {
+export function jettonWalletConfigToCell(config: JettonWalletConfig): Cell {
     return beginCell().endCell();
 }
 
-export class Test implements Contract {
+export class JettonWallet implements Contract {
     constructor(readonly address: Address, readonly init?: { code: Cell; data: Cell }) {}
 
     static createFromAddress(address: Address) {
-        return new Test(address);
+        return new JettonWallet(address);
     }
 
-    static createFromConfig(config: TestConfig, code: Cell, workchain = 0) {
-        const data = testConfigToCell(config);
+    static createFromConfig(config: JettonWalletConfig, code: Cell, workchain = 0) {
+        const data = jettonWalletConfigToCell(config);
         const init = { code, data };
-        return new Test(contractAddress(workchain, init), init);
+        return new JettonWallet(contractAddress(workchain, init), init);
     }
 
     async sendDeploy(provider: ContractProvider, via: Sender, value: bigint) {

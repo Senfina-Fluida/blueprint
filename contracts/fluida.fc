@@ -7,9 +7,12 @@
 ;; -----------------------------------------------------------------
 ;; Constants & Error Codes
 ;; -----------------------------------------------------------------
-const OP_COMPLETE_SWAP    = 2271560481;  ;; decimal 0x87654321
-const OP_REFUND_SWAP      = 2882400018;  ;; decimal 0xabcdef12
-const OP_INITIALIZE       = 1;           ;; New initialization operation
+const OP_COMPLETE_SWAP       = 2271560481;  ;; decimal 0x87654321
+const OP_REFUND_SWAP         = 2882400018;  ;; decimal 0xabcdef12
+const OP_INITIALIZE          = 1;           ;; New initialization operation
+
+;; New constant for deposit notifications (example: 0xDEADBEEF)
+const OP_DEPOSIT_NOTIFICATION = 3735928559;  ;; decimal 0xDEADBEEF
 
 const ERR_INVALID_AMOUNT                  = 65521; ;; 0xfff1
 const ERR_INVALID_TIMELOCK                = 65522; ;; 0xfff2
@@ -173,6 +176,30 @@ int has_swap(int swapId) method_id {
     save_data(jettonWallet, swapCounter + 1, swaps);
 }
 
+;; depositNotification: Called when a deposit notification is received.
+;; Expected message structure (after op code has been read):
+;;   [ depositAmount (128-bit),
+;;     depositor address,
+;;     hashLock (256-bit),
+;;     timeLock (64-bit) ]
+() depositNotification(slice in_msg_body) impure {
+    var (jettonWallet, swapCounter, swaps) = load_data();
+
+    int depositAmount = in_msg_body~load_uint(128);
+    slice depositor = in_msg_body~load_msg_addr();
+    int hashLock = in_msg_body~load_uint(256);
+    int timeLock = in_msg_body~load_uint(64);
+    
+    ;; For this example, we use the depositor address as both the initiator and recipient.
+    slice initiator = depositor;
+    slice recipient = depositor;
+    
+    builder b = buildSwap(initiator, recipient, depositAmount, hashLock, timeLock, 0);
+    swaps~udict_set(256, swapCounter, b.end_cell().begin_parse());
+    
+    save_data(jettonWallet, swapCounter + 1, swaps);
+}
+
 () completeSwap(slice in_msg_body) impure {
     ~strdump("COMPLETE SWAP - ENTER");
 
@@ -313,6 +340,11 @@ int has_swap(int swapId) method_id {
     
     if (op == OP_REFUND_SWAP) {
         refundSwap(in_msg_body);
+        return ();
+    }
+    
+    if (op == OP_DEPOSIT_NOTIFICATION) {
+        depositNotification(in_msg_body);
         return ();
     }
     
