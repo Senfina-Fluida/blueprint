@@ -70,14 +70,14 @@ const ERR_ALREADY_INITIALIZED             = 65519; ;; 0xffef
 ;; Helpers
 ;; -----------------------------------------------------------------
 
-;; Helper: compute sha256 of a 256-bit integer
-int sha256_int256(int x) inline {
-    builder b = begin_cell();
-    b = b.store_uint(x, 256);
-    cell c = b.end_cell();
-    return cell_hash(c);
+int sha256_int256(int preimage) inline {
+    ;; Create a hasher
+    slice s = begin_cell()
+        .store_uint(preimage, 256) ;; store the preimage
+        .end_cell()
+        .begin_parse();
+    return string_hash(s); ;; hash using TON's string_hash which is SHA256
 }
-
 ;; Helpers to serialize/deserialize a Swap record
 builder buildSwap(
     slice initiator,

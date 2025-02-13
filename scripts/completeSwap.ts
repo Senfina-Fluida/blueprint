@@ -20,7 +20,7 @@ function prompt(question: string): Promise<string> {
 
 export async function run(provider: NetworkProvider) {
   // Connect to Fluida contract using its address.
-  const fluidaAddress = Address.parse('EQB9nLhjbcv2lbKIQMqEzMVGlYFk-be7oO8X1jb-cB5v9g8L');
+  const fluidaAddress = Address.parse('EQBuH-HaipDBM4xWuDQsIOxZox6Gad9h-iho3QcF00ivJN6p');
   const fluida = provider.open(new Fluida(fluidaAddress));
 
   // --- STEP 1: Prompt for hashLock ---

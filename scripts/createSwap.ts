@@ -7,7 +7,7 @@ import fs from 'fs';
 
 export async function run(provider: NetworkProvider) {
   // Replace with your deployed Fluida contract address
-  const fluidaAddress = Address.parse('EQB9nLhjbcv2lbKIQMqEzMVGlYFk-be7oO8X1jb-cB5v9g8L');
+  const fluidaAddress = Address.parse('EQBuH-HaipDBM4xWuDQsIOxZox6Gad9h-iho3QcF00ivJN6p');
   // Use provider.open() to attach the provider to the contract instance.
   const fluida = provider.open(new Fluida(fluidaAddress));
 
