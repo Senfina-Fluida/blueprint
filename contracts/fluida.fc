@@ -22,6 +22,7 @@ const ERR_TIMELOCK_NOT_EXPIRED            = 65527; ;; 0xfff7
 const ERR_INVALID_OPERATION               = 65535; ;; 0xffff
 const ERR_SWAP_NOT_FOUND                  = 65520; ;; 0xfff0
 const ERR_ALREADY_INITIALIZED             = 65519; ;; 0xffef
+const ERR_INVALID_JETTON                  = 65524;
 
 ;; Error codes for specific checks
 
@@ -126,8 +127,8 @@ builder buildSwap(
 
 ;; Helper: Store a new swap record in storage.
 () storeSwap(slice jettonWallet, int swapCounter, cell swaps,
-             slice initiator, slice recipient,
-             int tokenAmount, int hashLock, int timeLock) impure inline {
+    slice initiator, slice recipient,
+    int tokenAmount, int hashLock, int timeLock) impure inline {
     
     ~strdump("=== STORING SWAP ===");
     ~strdump("Swap Counter:");
@@ -169,12 +170,12 @@ builder buildSwap(
         .store_coins(0)         ;; native coins are only used for gas
         .store_uint(0, 107)
         .store_ref(
-            begin_cell()
+        begin_cell()
                 .store_uint(0x7362d09c, 32)  ;; jetton transfer op code (example)
                 .store_slice(target)
                 .store_uint(tokenAmount, 128) ;; token amount (128-bit)
                 .end_cell()
-        );
+    );
     send_raw_message(msg.end_cell(), 64);
 }
 
@@ -270,12 +271,19 @@ int has_swap(int swapId) method_id {
 ;;   [ op code (32 bits), depositAmount (128-bit), depositor address,
 ;;     recipient address (in a ref cell), hashLock (256-bit), timeLock (64-bit) ]
 () depositNotification(slice sender_address, slice in_msg_body) impure {
+
+
+
+
     ~strdump("=== DEPOSIT NOTIFICATION START ===");
     
     ;; Load contract data and debug
     var (jettonWallet, swapCounter, swaps) = load_data();
     ~strdump("Contract Data Loaded:");
     ~strdump("JettonWallet:");
+
+    throw_unless(ERR_INVALID_JETTON, equal_slices(sender_address, jettonWallet));
+
     ~dump(jettonWallet);
     ~strdump("SwapCounter:");
     ~dump(swapCounter);
@@ -452,10 +460,10 @@ int has_swap(int swapId) method_id {
     throw_unless(ERR_INVALID_PREIMAGE, calculatedHash == hashLock);
     
     if (now() >= timeLock) {
-       ~strdump("ERROR: Timelock expired. Now:");
-       ~dump(now());
-       ~strdump("TimeLock:");
-       ~dump(timeLock);
+        ~strdump("ERROR: Timelock expired. Now:");
+        ~dump(now());
+        ~strdump("TimeLock:");
+        ~dump(timeLock);
     }
     throw_if(ERR_TIMELOCK_EXPIRED, now() >= timeLock);
     
@@ -487,181 +495,181 @@ int has_swap(int swapId) method_id {
     sendJettonTransfer(jettonWallet, initiator, tokenAmount);
 }
 
-() testFunction(int msg_value, cell in_msg_full, slice in_msg_body) impure {
-    ~strdump("=== TRACKING INCOMING MESSAGE STATUS ===");
+;; () testFunction(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+;;     ~strdump("=== TRACKING INCOMING MESSAGE STATUS ===");
     
-    ;; Load existing data
-    var (jettonWallet, swapCounter, swaps) = load_data();
+;;     ;; Load existing data
+;;     var (jettonWallet, swapCounter, swaps) = load_data();
     
-    ;; Check status of each component
-    int msg_value_empty = (msg_value == 0);
+;;     ;; Check status of each component
+;;     int msg_value_empty = (msg_value == 0);
     
-    ;; Check if msg_full is empty (checking if it's null cell)
-    slice msg_full_slice = in_msg_full.begin_parse();
-    int msg_full_empty = msg_full_slice.slice_empty?();
+;;     ;; Check if msg_full is empty (checking if it's null cell)
+;;     slice msg_full_slice = in_msg_full.begin_parse();
+;;     int msg_full_empty = msg_full_slice.slice_empty?();
     
-    ;; Check if msg_body is empty
-    int msg_body_empty = in_msg_body.slice_empty?();
+;;     ;; Check if msg_body is empty
+;;     int msg_body_empty = in_msg_body.slice_empty?();
     
-    ;; Calculate total empty count (0-3)
-    int total_empty = msg_value_empty + msg_full_empty + msg_body_empty;
+;;     ;; Calculate total empty count (0-3)
+;;     int total_empty = msg_value_empty + msg_full_empty + msg_body_empty;
     
-    ;; Create status flags cell
-    cell status_data = begin_cell().end_cell();
-    var error_occurred = 0;
+;;     ;; Create status flags cell
+;;     cell status_data = begin_cell().end_cell();
+;;     var error_occurred = 0;
     
-    try {
-        status_data = begin_cell()
-            ;; Store the value and its status
-            .store_uint(msg_value, 64)
-            .store_uint(msg_value_empty, 1)
+;;     try {
+;;         status_data = begin_cell()
+;;             ;; Store the value and its status
+;;             .store_uint(msg_value, 64)
+;;             .store_uint(msg_value_empty, 1)
             
-            ;; Store msg_full reference and its status
-            .store_ref(in_msg_full)
-            .store_uint(msg_full_empty, 1)
+;;             ;; Store msg_full reference and its status
+;;             .store_ref(in_msg_full)
+;;             .store_uint(msg_full_empty, 1)
             
-            ;; Store msg_body and its status
-            .store_uint(msg_body_empty, 1)
-            .store_slice(in_msg_body)
+;;             ;; Store msg_body and its status
+;;             .store_uint(msg_body_empty, 1)
+;;             .store_slice(in_msg_body)
             
-            ;; Store summary data
-            .store_uint(total_empty, 2)  ;; Can be 0-3
-            .store_uint(error_occurred, 1)
-            .end_cell();
+;;             ;; Store summary data
+;;             .store_uint(total_empty, 2)  ;; Can be 0-3
+;;             .store_uint(error_occurred, 1)
+;;             .end_cell();
             
-    } catch (_, _) {
-        error_occurred = 1;
-        ;; Fallback storage with just status flags
-        status_data = begin_cell()
-            .store_uint(0, 64)  ;; default value
-            .store_uint(1, 1)   ;; mark value as empty
-            .store_uint(1, 1)   ;; mark msg_full as empty
-            .store_uint(1, 1)   ;; mark msg_body as empty
-            .store_uint(3, 2)   ;; all empty (3)
-            .store_uint(1, 1)   ;; error occurred
-            .end_cell();
-    }
+;;     } catch (_, _) {
+;;         error_occurred = 1;
+;;         ;; Fallback storage with just status flags
+;;         status_data = begin_cell()
+;;             .store_uint(0, 64)  ;; default value
+;;             .store_uint(1, 1)   ;; mark value as empty
+;;             .store_uint(1, 1)   ;; mark msg_full as empty
+;;             .store_uint(1, 1)   ;; mark msg_body as empty
+;;             .store_uint(3, 2)   ;; all empty (3)
+;;             .store_uint(1, 1)   ;; error occurred
+;;             .end_cell();
+;;     }
     
-    ;; Save all data
-    set_data(begin_cell()
-        .store_slice(jettonWallet)
-        .store_uint(swapCounter, 64)
-        .store_dict(swaps)
-        .store_ref(status_data)
-        .end_cell());
+;;     ;; Save all data
+;;     set_data(begin_cell()
+;;         .store_slice(jettonWallet)
+;;         .store_uint(swapCounter, 64)
+;;         .store_dict(swaps)
+;;         .store_ref(status_data)
+;;         .end_cell());
         
-    ;; Log the status
-    ~strdump("Message Status Summary:");
-    ~strdump(msg_value_empty ? "Value: Empty (0)" : "Value: Has content");
-    ~strdump(msg_full_empty ? "Full Message: Empty" : "Full Message: Has content");
-    ~strdump(msg_body_empty ? "Message Body: Empty" : "Message Body: Has content");
-    ~strdump("Total empty components: ");
-    ~dump(total_empty);
-}
+;;     ;; Log the status
+;;     ~strdump("Message Status Summary:");
+;;     ~strdump(msg_value_empty ? "Value: Empty (0)" : "Value: Has content");
+;;     ~strdump(msg_full_empty ? "Full Message: Empty" : "Full Message: Has content");
+;;     ~strdump(msg_body_empty ? "Message Body: Empty" : "Message Body: Has content");
+;;     ~strdump("Total empty components: ");
+;;     ~dump(total_empty);
+;; }
 
-;; Get whether msg_value was empty (0)
-int get_msg_value_empty() method_id {
-    slice ds = get_data().begin_parse();
-    ds~load_msg_addr();  ;; Skip jettonWallet
-    ds~load_uint(64);    ;; Skip swapCounter
-    ds~load_dict();      ;; Skip swaps
-    slice status = ds~load_ref().begin_parse();
-    status~load_uint(64);  ;; Skip value
-    return status~load_uint(1);
-}
+;; ;; Get whether msg_value was empty (0)
+;; int get_msg_value_empty() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     return status~load_uint(1);
+;; }
 
-;; Get whether msg_full was empty
-int get_msg_full_empty() method_id {
-    slice ds = get_data().begin_parse();
-    ds~load_msg_addr();  ;; Skip jettonWallet
-    ds~load_uint(64);    ;; Skip swapCounter
-    ds~load_dict();      ;; Skip swaps
-    slice status = ds~load_ref().begin_parse();
-    status~load_uint(64);  ;; Skip value
-    status~load_uint(1);   ;; Skip value empty flag
-    status~load_ref();     ;; Skip msg_full
-    return status~load_uint(1);
-}
+;; ;; Get whether msg_full was empty
+;; int get_msg_full_empty() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     return status~load_uint(1);
+;; }
 
-;; Get whether msg_body was empty
-int get_msg_body_empty() method_id {
-    slice ds = get_data().begin_parse();
-    ds~load_msg_addr();  ;; Skip jettonWallet
-    ds~load_uint(64);    ;; Skip swapCounter
-    ds~load_dict();      ;; Skip swaps
-    slice status = ds~load_ref().begin_parse();
-    status~load_uint(64);  ;; Skip value
-    status~load_uint(1);   ;; Skip value empty flag
-    status~load_ref();     ;; Skip msg_full
-    status~load_uint(1);   ;; Skip msg_full empty flag
-    return status~load_uint(1);
-}
+;; ;; Get whether msg_body was empty
+;; int get_msg_body_empty() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     status~load_uint(1);   ;; Skip msg_full empty flag
+;;     return status~load_uint(1);
+;; }
 
-;; Get how many components were empty (0-3)
-int get_total_empty_count() method_id {
-    slice ds = get_data().begin_parse();
-    ds~load_msg_addr();  ;; Skip jettonWallet
-    ds~load_uint(64);    ;; Skip swapCounter
-    ds~load_dict();      ;; Skip swaps
-    slice status = ds~load_ref().begin_parse();
-    status~load_uint(64);  ;; Skip value
-    status~load_uint(1);   ;; Skip value empty flag
-    status~load_ref();     ;; Skip msg_full
-    status~load_uint(1);   ;; Skip msg_full empty flag
-    status~load_uint(1);   ;; Skip msg_body empty flag
-    return status~load_uint(2);
-}
+;; ;; Get how many components were empty (0-3)
+;; int get_total_empty_count() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     status~load_uint(1);   ;; Skip msg_full empty flag
+;;     status~load_uint(1);   ;; Skip msg_body empty flag
+;;     return status~load_uint(2);
+;; }
 
-;; Get whether any error occurred
-int get_error_occurred() method_id {
-    slice ds = get_data().begin_parse();
-    ds~load_msg_addr();  ;; Skip jettonWallet
-    ds~load_uint(64);    ;; Skip swapCounter
-    ds~load_dict();      ;; Skip swaps
-    slice status = ds~load_ref().begin_parse();
-    status~load_uint(64);  ;; Skip value
-    status~load_uint(1);   ;; Skip value empty flag
-    status~load_ref();     ;; Skip msg_full
-    status~load_uint(1);   ;; Skip msg_full empty flag
-    status~load_uint(1);   ;; Skip msg_body empty flag
-    status~load_uint(2);   ;; Skip total empty count
-    return status~load_uint(1);
-}
+;; ;; Get whether any error occurred
+;; int get_error_occurred() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     status~load_uint(1);   ;; Skip msg_full empty flag
+;;     status~load_uint(1);   ;; Skip msg_body empty flag
+;;     status~load_uint(2);   ;; Skip total empty count
+;;     return status~load_uint(1);
+;; }
 
-;; Get the actual msg_value
-int get_msg_value() method_id {
-    slice ds = get_data().begin_parse();
-    ds~load_msg_addr();  ;; Skip jettonWallet
-    ds~load_uint(64);    ;; Skip swapCounter
-    ds~load_dict();      ;; Skip swaps
-    return ds~load_ref().begin_parse().preload_uint(64);
-}
+;; ;; Get the actual msg_value
+;; int get_msg_value() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     return ds~load_ref().begin_parse().preload_uint(64);
+;; }
 
-;; Get the full message cell
-cell get_msg_full() method_id {
-    slice ds = get_data().begin_parse();
-    ds~load_msg_addr();  ;; Skip jettonWallet
-    ds~load_uint(64);    ;; Skip swapCounter
-    ds~load_dict();      ;; Skip swaps
-    slice status = ds~load_ref().begin_parse();
-    status~load_uint(64);  ;; Skip value
-    status~load_uint(1);   ;; Skip value empty flag
-    return status~load_ref();
-}
+;; ;; Get the full message cell
+;; cell get_msg_full() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     return status~load_ref();
+;; }
 
-slice get_msg_body() method_id {
-    slice ds = get_data().begin_parse();
-    ds~load_msg_addr();  ;; Skip jettonWallet
-    ds~load_uint(64);    ;; Skip swapCounter
-    ds~load_dict();      ;; Skip swaps
-    slice status = ds~load_ref().begin_parse();
-    status~load_uint(64);  ;; Skip value
-    status~load_uint(1);   ;; Skip value empty flag
-    status~load_ref();     ;; Skip msg_full
-    status~load_uint(1);   ;; Skip msg_full empty flag
-    status~load_uint(1);   ;; Skip msg_body empty flag
-    return status;  ;; The remaining slice contains the msg_body
-}
+;; slice get_msg_body() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     status~load_uint(1);   ;; Skip msg_full empty flag
+;;     status~load_uint(1);   ;; Skip msg_body empty flag
+;;     return status;  ;; The remaining slice contains the msg_body
+;; }
 
 
 
@@ -690,7 +698,7 @@ slice get_msg_body() method_id {
     ~strdump("jettonWallet:");
     ~dump(jettonWallet);
 
-    testFunction(msg_value, in_msg_full, in_msg_body);
+    ;; testFunction(msg_value, in_msg_full, in_msg_body);
 
 
     if (op == OP_INITIALIZE) {
@@ -708,199 +716,193 @@ slice get_msg_body() method_id {
         return ();
     }
     
-;; Error codes for different scenarios
+    ;; Error codes for different scenarios
 
-if (op == 0x7362d09c) { ;; JETTON_TRANSFER_NOTIFICATION
-    throw_unless(ERR_INVALID_OP, op == 0x7362d09c);
-    
-    ~strdump("INSIDE:");
-    ~strdump("op:");
-    ~dump(op);
-    
-    ;; Check if slice is empty
-    try {
-        throw_if(ERR_INVALID_FROM_ADDRESS, in_msg_body.slice_data_empty?());
-    } catch (err) {
-        ~strdump("Error checking if slice is empty for from_address");
-        throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
-    }
-    
-    ;; Load from_address
-    slice from_address = null();
-    try {
-        from_address = in_msg_body~load_msg_addr();
-    } catch (err) {
-        ~strdump("Error loading from_address");
-        throw(ERR_FAILED_LOAD_MSG_ADDR);
-    }
-    
-    ;; Check if address is empty
-    try {
-        throw_if(ERR_INVALID_FROM_ADDRESS, from_address.slice_empty?());
-    } catch (err) {
-        ~strdump("Error checking if from_address is empty");
-        throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
-    }
-    
-    ~strdump("from_address:");
-    ~dump(from_address);
-    
-    ;; Load amount
-    try {
-        throw_if(ERR_INVALID_AMOUNT_TRANSFER, in_msg_body.slice_data_empty?());
-    } catch (err) {
-        ~strdump("Error checking if slice is empty for amount");
-        throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
-    }
-    
-    int amount = 0;
-    try {
-        amount = in_msg_body~load_uint(128);
-    } catch (err) {
-        ~strdump("Error loading amount value");
-        throw(ERR_FAILED_LOAD_UINT);
-    }
-    
-    throw_if(ERR_INVALID_AMOUNT_TRANSFER, amount <= 0);
-    ~strdump("amount:");
-    ~dump(amount);
-    
-    ;; Load response_address with detailed error handling
-    try {
-        throw_if(ERR_INVALID_RESPONSE_ADDRESS, in_msg_body.slice_data_empty?());
-    } catch (err) {
-        ~strdump("Error checking if slice is empty for response_address");
-        throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
-    }
-    
-    slice response_address = sender_address;
-   ;; try {
-   ;;     response_address = in_msg_body~load_msg_addr();
-  ;;  } catch (err) {
-   ;;     ~strdump("Error loading response_address");
-   ;;     throw(ERR_FAILED_LOAD_MSG_ADDR);
-  ;;  }
-    
- ;;   try {
-   ;;     throw_if(ERR_INVALID_RESPONSE_ADDRESS, response_address.slice_empty?());
-  ;;  } catch (err) {
-   ;;     ~strdump("Error checking if response_address is empty");
-   ;;     throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
- ;;   }
-    
-  ;;  ~strdump("response_address:");
-  ;;  ~dump(response_address);
-    
-    ;; Check refs count
-    int slice_refs_count = 0;
-    try {
-        slice_refs_count = in_msg_body.slice_refs();
-    } catch (err) {
-        ~strdump("Error getting refs count");
-        throw(ERR_FAILED_SLICE_REFS_COUNT);
-    }
-    
-    throw_if(ERR_NO_REFS, slice_refs_count == 0);
-    ~strdump("slice_refs_count:");
-    ~dump(slice_refs_count);
-    
-    if (slice_refs_count > 0) {
-        ;; Check if refs are empty
+    if (op == 0x7362d09c) { ;; JETTON_TRANSFER_NOTIFICATION
+        ;; Check if slice is empty
         try {
-            throw_if(ERR_INVALID_FORWARD_PAYLOAD, in_msg_body.slice_refs_empty?());
+            throw_if(ERR_INVALID_FROM_ADDRESS, in_msg_body.slice_data_empty?());
         } catch (err) {
-            ~strdump("Error checking if refs are empty");
-            throw(ERR_FAILED_CHECKING_REFS_EMPTY);
+            ~strdump("Error checking if slice is empty for from_address");
+            throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
         }
-        
-        ;; Load ref
-        cell forward_payload = null();
+    
+        ;; Load from_address
+        slice from_address = null();
         try {
-            forward_payload = in_msg_body~load_ref();
+            from_address = in_msg_body~load_msg_addr();
         } catch (err) {
-            ~strdump("Error loading forward_payload ref");
-            throw(ERR_FAILED_LOAD_REF);
+            ~strdump("Error loading from_address");
+            throw(ERR_FAILED_LOAD_MSG_ADDR);
         }
-        
-        ;; Parse forward payload
-        slice forward_payload_slice = null();
+    
+        ;; Check if address is empty
         try {
-            forward_payload_slice = forward_payload.begin_parse();
+            throw_if(ERR_INVALID_FROM_ADDRESS, from_address.slice_empty?());
         } catch (err) {
-            ~strdump("Error parsing forward_payload");
-            throw(ERR_FAILED_PARSE_FORWARD_PAYLOAD);
-        }
-        
-        try {
-            throw_if(ERR_INVALID_FORWARD_PAYLOAD, forward_payload_slice.slice_empty?());
-        } catch (err) {
-            ~strdump("Error checking if forward_payload_slice is empty");
+            ~strdump("Error checking if from_address is empty");
             throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
         }
-        
-        ~strdump("forward_payload:");
-        ~dump(forward_payload);
-        
-        ;; Parse forward slice
-        slice forward_slice = null();
+    
+        ~strdump("from_address:");
+        ~dump(from_address);
+    
+        ;; Load amount
         try {
-            forward_slice = forward_payload.begin_parse();
+            throw_if(ERR_INVALID_AMOUNT_TRANSFER, in_msg_body.slice_data_empty?());
         } catch (err) {
-            ~strdump("Error parsing forward_slice");
-            throw(ERR_FAILED_PARSE_FORWARD_SLICE);
+            ~strdump("Error checking if slice is empty for amount");
+            throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
         }
-        
+    
+        int amount = 0;
         try {
-            throw_if(ERR_INVALID_FORWARD_SLICE, forward_slice.slice_empty?());
+            amount = in_msg_body~load_uint(128);
         } catch (err) {
-            ~strdump("Error checking if forward_slice is empty");
-            throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
+            ~strdump("Error loading amount value");
+            throw(ERR_FAILED_LOAD_UINT);
         }
-        
-        ~strdump("forward_slice:");
-        ~dump(forward_slice);
-        
-        ;; Get slice bits
-        int forward_slice_bits = 0;
+    
+        throw_if(ERR_INVALID_AMOUNT_TRANSFER, amount <= 0);
+        ~strdump("amount:");
+        ~dump(amount);
+    
+        ;; Load response_address with detailed error handling
         try {
-            forward_slice_bits = forward_slice.slice_bits();
+            throw_if(ERR_INVALID_RESPONSE_ADDRESS, in_msg_body.slice_data_empty?());
         } catch (err) {
-            ~strdump("Error getting forward_slice bits");
-            throw(ERR_FAILED_GET_SLICE_BITS);
+            ~strdump("Error checking if slice is empty for response_address");
+            throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
         }
-        
-        throw_if(ERR_INSUFFICIENT_BITS, forward_slice_bits < 32);
-        ~strdump("forward_slice_bits:");
-        ~dump(forward_slice_bits);
-        
-        if (forward_slice_bits >= 32) {
-            ;; Load forward op
-            int forward_op = 0;
+    
+        slice response_address = sender_address;
+        ;; try {
+        ;;     response_address = in_msg_body~load_msg_addr();
+        ;;  } catch (err) {
+        ;;     ~strdump("Error loading response_address");
+        ;;     throw(ERR_FAILED_LOAD_MSG_ADDR);
+        ;;  }
+    
+        ;;   try {
+        ;;     throw_if(ERR_INVALID_RESPONSE_ADDRESS, response_address.slice_empty?());
+        ;;  } catch (err) {
+        ;;     ~strdump("Error checking if response_address is empty");
+        ;;     throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
+        ;;   }
+    
+        ;;  ~strdump("response_address:");
+        ~dump(response_address);
+    
+        ;; Check refs count
+        int slice_refs_count = 0;
+        try {
+            slice_refs_count = in_msg_body.slice_refs();
+        } catch (err) {
+            ~strdump("Error getting refs count");
+            throw(ERR_FAILED_SLICE_REFS_COUNT);
+        }
+    
+        throw_if(ERR_NO_REFS, slice_refs_count == 0);
+        ~strdump("slice_refs_count:");
+        ~dump(slice_refs_count);
+    
+        if (slice_refs_count > 0) {
+            ;; Check if refs are empty
             try {
-                forward_op = forward_slice~load_uint(32);
+                throw_if(ERR_INVALID_FORWARD_PAYLOAD, in_msg_body.slice_refs_empty?());
             } catch (err) {
-                ~strdump("Error loading forward_op");
-                throw(ERR_FAILED_LOAD_UINT);
+                ~strdump("Error checking if refs are empty");
+                throw(ERR_FAILED_CHECKING_REFS_EMPTY);
             }
-            
-            throw_if(ERR_INVALID_FORWARD_OP, forward_op <= 0);
-            ~strdump("forward_op:");
-            ~dump(forward_op);
-            
-            if (forward_op == OP_DEPOSIT_NOTIFICATION) {
-                ~strdump("DEPOSIT_NOTIFICATION detected");
+        
+            ;; Load ref
+            cell forward_payload = null();
+            try {
+                forward_payload = in_msg_body~load_ref();
+            } catch (err) {
+                ~strdump("Error loading forward_payload ref");
+                throw(ERR_FAILED_LOAD_REF);
+            }
+        
+            ;; Parse forward payload
+            slice forward_payload_slice = null();
+            try {
+                forward_payload_slice = forward_payload.begin_parse();
+            } catch (err) {
+                ~strdump("Error parsing forward_payload");
+                throw(ERR_FAILED_PARSE_FORWARD_PAYLOAD);
+            }
+        
+            try {
+                throw_if(ERR_INVALID_FORWARD_PAYLOAD, forward_payload_slice.slice_empty?());
+            } catch (err) {
+                ~strdump("Error checking if forward_payload_slice is empty");
+                throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
+            }
+        
+            ~strdump("forward_payload:");
+            ~dump(forward_payload);
+        
+            ;; Parse forward slice
+            slice forward_slice = null();
+            try {
+                forward_slice = forward_payload.begin_parse();
+            } catch (err) {
+                ~strdump("Error parsing forward_slice");
+                throw(ERR_FAILED_PARSE_FORWARD_SLICE);
+            }
+        
+            try {
+                throw_if(ERR_INVALID_FORWARD_SLICE, forward_slice.slice_empty?());
+            } catch (err) {
+                ~strdump("Error checking if forward_slice is empty");
+                throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
+            }
+        
+            ~strdump("forward_slice:");
+            ~dump(forward_slice);
+        
+            ;; Get slice bits
+            int forward_slice_bits = 0;
+            try {
+                forward_slice_bits = forward_slice.slice_bits();
+            } catch (err) {
+                ~strdump("Error getting forward_slice bits");
+                throw(ERR_FAILED_GET_SLICE_BITS);
+            }
+        
+            throw_if(ERR_INSUFFICIENT_BITS, forward_slice_bits < 32);
+            ~strdump("forward_slice_bits:");
+            ~dump(forward_slice_bits);
+        
+            if (forward_slice_bits >= 32) {
+                ;; Load forward op
+                int forward_op = 0;
                 try {
-                    depositNotification(sender_address, forward_slice);
+                    forward_op = forward_slice~load_uint(32);
                 } catch (err) {
-                    ~strdump("Error executing deposit notification");
-                    throw(ERR_FAILED_DEPOSIT_NOTIFICATION);
+                    ~strdump("Error loading forward_op");
+                    throw(ERR_FAILED_LOAD_UINT);
                 }
-                return ();
+            
+                throw_if(ERR_INVALID_FORWARD_OP, forward_op <= 0);
+                ~strdump("forward_op:");
+                ~dump(forward_op);
+            
+                if (forward_op == OP_DEPOSIT_NOTIFICATION) {
+                    ~strdump("DEPOSIT_NOTIFICATION detected");
+                    try {
+                        depositNotification(sender_address, forward_slice);
+                    } catch (err) {
+                        ~strdump("Error executing deposit notification");
+                        throw(ERR_FAILED_DEPOSIT_NOTIFICATION);
+                    }
+                    return ();
+                }
             }
         }
+        return ();
     }
-    return ();
-}
 
     
 }

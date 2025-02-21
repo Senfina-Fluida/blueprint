@@ -299,7 +299,7 @@ async function testDepositNotification(contract: any) {
         const timeLock = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
         const extraCell = beginCell()
-        .storeUint(hashLock, 256)
+        .storeUint(hashLock, 256)   
         .storeUint(timeLock, 64)
         .endCell();
     

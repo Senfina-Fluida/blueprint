@@ -23,7 +23,7 @@ export async function run(provider: NetworkProvider) {
         // 3) Configure the Fluida contract
         // Here we use the sender's address as the approved jetton wallet.
         const fluidaConfig: FluidaConfig = {
-            jettonWallet: Address.parse("EQCw-TMDSxfgF3Pkzu59ZCNh5cTonlSwNMk2hyI9znwUQ7V0"),
+            jettonWallet: Address.parse("kQDKqoHJ5sYKwB8CvPmdFSzOmDDu3BI85on_ks6WXnriIhSY"),
             swapCounter: 0n,
             swaps: emptySwaps,
         };

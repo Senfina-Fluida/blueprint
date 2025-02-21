@@ -38,7 +38,7 @@ export async function run(provider: NetworkProvider) {
   console.log("Jetton Wallet Address:", jettonWalletAddress.toString());
 
   // 3. Set the destination as the Fluida contract address.
-  const fluidaAddress = Address.parse("EQCvLVdb58Z5jjn_fC7GchRA-Z5iCatXuAbEUS--101d8ayO");
+  const fluidaAddress = Address.parse("kQBj6Iu0Ep_ucvImO0WeyNcuLL7mTsv1-l7nlPU8OrANVJJC");
   console.log("Fluida Contract Address:", fluidaAddress.toString());
 
   // 4. Define parameters.
@@ -71,7 +71,7 @@ export async function run(provider: NetworkProvider) {
   const depositNotificationPayload = beginCell()
     .storeUint(OP_DEPOSIT_NOTIFICATION, 32)  // deposit notification op code (0xDEADBEEF)
     .storeUint(depositAmount, 128)
-    .storeAddress(owner)
+    .storeAddress(Address.parse("UQB9RHE1End1gVxC2FDorBPYH1mKJgRkX534u0wLd0R3R8kG"))     // !! RECEIVER //
     .storeRef(
       beginCell()
         .storeAddress(PARTICIPANT_ADDRESS_2)
