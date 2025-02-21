@@ -1,13 +1,9 @@
-import { toNano } from '@ton/core';
-import { Test } from '../wrappers/Test';
-import { compile, NetworkProvider } from '@ton/blueprint';
+import { SmartContract } from "ton-contract-executor";
 
-export async function run(provider: NetworkProvider) {
-    const test = provider.open(Test.createFromConfig({}, await compile('Test')));
+const contract = await SmartContract.fromCell(codeCell, dataCell, {
+  debug: true // enable debug
+});
 
-    await test.sendDeploy(provider.sender(), toNano('0.05'));
+const send = await contract.sendInternalMessage(...);
 
-    await provider.waitForDeploy(test.address);
-
-    // run methods on `test`
-}
+console.log(send.logs); // print the logs
