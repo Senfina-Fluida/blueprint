@@ -50,6 +50,16 @@ const ERR_FAILED_CHECKING_REFS_EMPTY              = 519;
 const ERR_FAILED_CHECKING_SLICE_DATA_EMPTY        = 520;
 const ERR_FAILED_CHECKING_SLICE_EMPTY             = 521;
 
+
+;; Error codes transfer jetton
+const ERR_INSUFFICIENT_VALUE = 801;
+const ERR_EMPTY_TARGET = 802;
+const ERR_INVALID_AMOUNT_SEND_JETTON = 803;
+const ERR_EMPTY_WALLET = 804;
+const ERR_MSG_BUILD = 805;
+const ERR_BODY_BUILD = 806;
+const ERR_SEND_FAILED = 807;
+
 ;; -----------------------------------------------------------------
 ;; Global Variables (persistent storage)
 ;; -----------------------------------------------------------------
@@ -160,25 +170,92 @@ builder buildSwap(
 }
 
 ;; Helper: Send a jetton transfer message.
-() sendJettonTransfer(slice jettonWallet, slice target, int tokenAmount) impure inline {
-    ~strdump("ERROR TRANSFER");
+() sendJettonTransfer(slice jettonWallet, slice target, int tokenAmount, int msg_value) impure inline {
+    ~strdump("Starting Jetton Transfer");
+    
+    ;; Constants for gas calculations
+    int fwd_fee = 50000000;  ;; 0.05 TON
+    int gas_consumption = 10000000;  ;; 0.01 TON
+    int min_tons_for_storage = 10000000;  ;; 0.01 TON
+    
 
 
-    var msg = begin_cell()
-        .store_uint(0x18, 6)
-        .store_slice(jettonWallet)
-        .store_coins(0)         ;; native coins are only used for gas
-        .store_uint(0, 107)
-        .store_ref(
-        begin_cell()
-                .store_uint(0x7362d09c, 32)  ;; jetton transfer op code (example)
-                .store_slice(target)
-                .store_uint(tokenAmount, 128) ;; token amount (128-bit)
-                .end_cell()
-    );
-    send_raw_message(msg.end_cell(), 64);
+    try {
+        ;; Required value calculation
+        int forward_ton_amount = 10000000; ;; 0.01 TON for receiver
+        int required_value = forward_ton_amount + 2 * gas_consumption + fwd_fee + min_tons_for_storage;
+        
+        ;; Input validation with specific error messages
+        if (msg_value <= required_value) {
+            ~strdump("ERROR: Insufficient message value");
+            ~strdump("Required:");
+            ~dump(required_value);
+            ~strdump("Provided:");
+            ~dump(msg_value);
+            throw(ERR_INSUFFICIENT_VALUE);
+        }
+
+        if (target.slice_empty?()) {
+            ~strdump("ERROR: Empty target address");
+            throw(ERR_EMPTY_TARGET);
+        }
+
+        if (tokenAmount <= 0) {
+            ~strdump("ERROR: Invalid token amount");
+            ~dump(tokenAmount);
+            throw(ERR_INVALID_AMOUNT);
+        }
+
+        if (jettonWallet.slice_empty?()) {
+            ~strdump("ERROR: Empty jetton wallet address");
+            throw(ERR_EMPTY_WALLET);
+        }
+
+        var msg = null();
+        try {
+            msg = begin_cell()
+                .store_uint(0x18, 6)  ;; nobounce - 0b011000
+                .store_slice(jettonWallet)
+                .store_coins(0)
+                .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1);  ;; serialized message with 107 bits
+        } catch (_, _) {
+            ~strdump("ERROR: Failed to build message header");
+            throw(ERR_MSG_BUILD);
+        }
+
+        var msg_body = null();
+        try {
+            msg_body = begin_cell()
+                .store_uint(0xf8a7ea5, 32)  ;; transfer operation code
+                .store_uint(0, 64)          ;; query_id
+                .store_coins(tokenAmount)    ;; amount
+                .store_slice(target)         ;; destination address
+                .store_slice(target)         ;; response destination
+                .store_uint(0, 1)           ;; null custom_payload
+                .store_coins(forward_ton_amount)  ;; forward_ton_amount
+                .store_uint(0, 1);          ;; forward_payload in this slice, not in a ref
+        } catch (_, _) {
+            ~strdump("ERROR: Failed to build message body");
+            throw(ERR_BODY_BUILD);
+        }
+
+        msg = msg.store_ref(msg_body.end_cell());
+
+        ;; Try to send the message
+        try {
+            send_raw_message(msg.end_cell(), 64);  ;; mode 64 = carry all remaining value, revert on errors
+            ~strdump("Jetton transfer message sent successfully");
+        } catch (_, _) {
+            ~strdump("ERROR: Failed to send message");
+            throw(ERR_SEND_FAILED);
+        }
+
+    } catch (err) {
+        ;; ~strdump("Jetton transfer failed with error code:");
+        ;; ~dump(err);
+        throw(ERR_SEND_FAILED);
+    }
 }
-
 ;; -----------------------------------------------------------------
 ;; Initialize contract storage
 ;; -----------------------------------------------------------------
@@ -408,7 +485,7 @@ int has_swap(int swapId) method_id {
 }
 
 ;; completeSwap: Completes a swap if a valid preimage is provided.
-() completeSwap(slice in_msg_body) impure {
+() completeSwap(slice in_msg_body, int msg_value) impure {
     ~strdump("COMPLETE SWAP - ENTER");
     var (jettonWallet, swapCounter, swaps) = load_data();
     
@@ -471,29 +548,31 @@ int has_swap(int swapId) method_id {
     builder newSwap = buildSwap(initiator, recipient, tokenAmount, hashLock, timeLock, 1);
     swaps~udict_set(256, swapId, newSwap.end_cell().begin_parse());
     
+    sendJettonTransfer(jettonWallet, recipient, tokenAmount, msg_value);
+    ~strdump("Jetton transfer message sent");
+
     save_data(jettonWallet, swapCounter, swaps);
     ~strdump("Swap marked as completed and data saved");
-    
-    sendJettonTransfer(jettonWallet, recipient, tokenAmount);
-    ~strdump("Jetton transfer message sent");
+
+
 }
 
 ;; refundSwap: Refunds a swap when the timelock has expired.
-() refundSwap(slice in_msg_body) impure {
-    var (jettonWallet, swapCounter, swaps) = load_data();
+;; () refundSwap(slice in_msg_body) impure {
+;;     var (jettonWallet, swapCounter, swaps) = load_data();
     
-    int swapId = in_msg_body~load_uint(256);
+;;     int swapId = in_msg_body~load_uint(256);
     
-    var (swapData, found) = swaps.udict_get?(256, swapId);
-    throw_unless(ERR_SWAP_NOT_FOUND, found);
+;;     var (swapData, found) = swaps.udict_get?(256, swapId);
+;;     throw_unless(ERR_SWAP_NOT_FOUND, found);
     
-    var (initiator, recipient, tokenAmount, hashLock, timeLock, isCompleted) = parseSwap(swapData);
+;;     var (initiator, recipient, tokenAmount, hashLock, timeLock, isCompleted) = parseSwap(swapData);
     
-    throw_if(ERR_SWAP_ALREADY_COMPLETED_REFUND, isCompleted);
-    throw_if(ERR_TIMELOCK_NOT_EXPIRED, now() < timeLock);
+;;     throw_if(ERR_SWAP_ALREADY_COMPLETED_REFUND, isCompleted);
+;;     throw_if(ERR_TIMELOCK_NOT_EXPIRED, now() < timeLock);
     
-    sendJettonTransfer(jettonWallet, initiator, tokenAmount);
-}
+;;     sendJettonTransfer(jettonWallet, initiator, tokenAmount);
+;; }
 
 ;; () testFunction(int msg_value, cell in_msg_full, slice in_msg_body) impure {
 ;;     ~strdump("=== TRACKING INCOMING MESSAGE STATUS ===");
@@ -707,14 +786,14 @@ int has_swap(int swapId) method_id {
     }
     
     if (op == OP_COMPLETE_SWAP) {
-        completeSwap(in_msg_body);
+        completeSwap(in_msg_body, msg_value);
         return ();
     }
     
-    if (op == OP_REFUND_SWAP) {
-        refundSwap(in_msg_body);
-        return ();
-    }
+    ;; if (op == OP_REFUND_SWAP) {
+    ;;     refundSwap(in_msg_body);
+    ;;     return ();
+    ;; }
     
     ;; Error codes for different scenarios
 

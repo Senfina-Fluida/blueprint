@@ -1,6 +1,8 @@
 import { toNano, Address, beginCell, SendMode } from '@ton/core';
 import { NetworkProvider } from '@ton/blueprint';
 import { calculateHashLock } from './utils/hashHelper';
+import fs from 'fs';
+import { randomBytes } from 'crypto';
 
 // --- Throttling Helper ---
 async function sleep(ms: number): Promise<void> {
@@ -20,7 +22,7 @@ async function withRetry<T>(
   } catch (error: any) {
     if (error.response?.status === 429 && retryCount < 5) {
       console.warn(`Rate limit hit for ${operationName}. Retrying...`);
-    return withRetry(operation, operationName, retryCount + 1);
+      return withRetry(operation, operationName, retryCount + 1);
     }
     throw error;
   }
@@ -38,7 +40,7 @@ export async function run(provider: NetworkProvider) {
   console.log("Jetton Wallet Address:", jettonWalletAddress.toString());
 
   // 3. Set the destination as the Fluida contract address.
-  const fluidaAddress = Address.parse("kQBj6Iu0Ep_ucvImO0WeyNcuLL7mTsv1-l7nlPU8OrANVJJC");
+  const fluidaAddress = Address.parse("EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i");
   console.log("Fluida Contract Address:", fluidaAddress.toString());
 
   // 4. Define parameters.
@@ -48,7 +50,7 @@ export async function run(provider: NetworkProvider) {
 
   // 5. Build the deposit-notification forward payload with an extra cell for hashLock/timeLock.
   const OP_DEPOSIT_NOTIFICATION = 0xDEADBEEFn; // 0xDEADBEEF = 3735928559
-  const depositAmount = toNano("1");           // deposit amount in minimal units (modify as needed)
+  const depositAmount = toNano(0.05);           // deposit amount in minimal units (modify as needed)
 
   // Use the jetton wallet as the minter (depositor). Modify if you have a separate minter contract.
   const minterContract = { address: jettonWalletAddress };
@@ -56,10 +58,41 @@ export async function run(provider: NetworkProvider) {
   // Replace with the actual participant2 address.
   const PARTICIPANT_ADDRESS_2 = Address.parse(owner.toString());
 
-  // Define a dummy 256-bit hashLock.
-  const preimage = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn;
-  const hashLock = 123456789n;
-  const timeLock = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  // --- Change: Generate a random 256-bit preimage and calculate hashLock ---
+  const preimage = BigInt('0x' + randomBytes(32).toString('hex'));
+  const hashLock = calculateHashLock(preimage);
+  // --------------------------------------------------------------------------
+
+  const filePath = 'swap-secrets.json';
+
+  // Initialize swapSecrets as an empty array.
+  let swapSecrets = [];
+
+  // Check if the file already exists.
+  if (fs.existsSync(filePath)) {
+    try {
+      const existingData = fs.readFileSync(filePath, 'utf8');
+      // Parse the JSON. If the file content is not an array, we wrap it in an array.
+      const parsedData = JSON.parse(existingData);
+      swapSecrets = Array.isArray(parsedData) ? parsedData : [parsedData];
+    } catch (error) {
+      console.error('Error reading or parsing swap-secrets.json:', error);
+    }
+  }
+
+  // --- Change: Save the preimage and hashLock to file ---
+  const newSwapData = {
+    preimage: preimage.toString(16), // store as hex (without 0x prefix)
+    hashLock: '0x' + hashLock.toString(16),
+    timestamp: Date.now()
+  };
+  swapSecrets.push(newSwapData);
+  fs.writeFileSync(filePath, JSON.stringify(swapSecrets, null, 2));
+  // -------------------------------------------------------
+
+  // Define timeLock before building extra cell.
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+  const timeLock = BigInt(currentTimestamp + 3600); // 1 hour from now
 
   // Build an extra cell for hashLock and timeLock.
   const extraCell = beginCell()
@@ -71,10 +104,10 @@ export async function run(provider: NetworkProvider) {
   const depositNotificationPayload = beginCell()
     .storeUint(OP_DEPOSIT_NOTIFICATION, 32)  // deposit notification op code (0xDEADBEEF)
     .storeUint(depositAmount, 128)
-    .storeAddress(Address.parse("UQB9RHE1End1gVxC2FDorBPYH1mKJgRkX534u0wLd0R3R8kG"))     // !! RECEIVER //
+    .storeAddress(owner)  // INITIATOR - sender 
     .storeRef(
       beginCell()
-        .storeAddress(PARTICIPANT_ADDRESS_2)
+        .storeAddress(Address.parse("UQB9RHE1End1gVxC2FDorBPYH1mKJgRkX534u0wLd0R3R8kG"))   // !! RECEIVER //
         .endCell()
     )
     // Instead of storing hashLock/timeLock inline, store a reference to the extra cell.

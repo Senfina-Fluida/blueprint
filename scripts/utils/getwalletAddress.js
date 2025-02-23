@@ -9,7 +9,7 @@ const { TonClient, JettonMaster } = require("@ton/ton");
 
   // Parse the jetton master contract and user addresses.
   const jettonMasterAddress = Address.parse('kQBWqA0Zb6TmFlMUIoDlyAscUAcMQ3-1tae2POQ4Xl4xrw_V');
-  const userAddress = Address.parse('EQCw-TMDSxfgF3Pkzu59ZCNh5cTonlSwNMk2hyI9znwUQ7V0');
+  const userAddress = Address.parse('EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i');
 
   // Log the EQ-format (user-friendly) address of the jetton master.
   console.log("Jetton Master EQ-address:", jettonMasterAddress.toString());

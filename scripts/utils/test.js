@@ -30,7 +30,7 @@ async function main() {
       '5c3049824bce702021d43edaf3839803946143c317b4284e83d8161cf02a9782'
   });
 
-  const contractAddress = Address.parse('EQC23P7Yt0vUUtD0LT-_f3JXqDhxaKkQNzDaf0DhvoZ-f0mI');
+  const contractAddress = Address.parse('EQC0O95byCe3hiTI4UwhiAr7LXrWg3-OcffTV9wdexdk3wOS');
   const transactions = await client.getTransactions(contractAddress, { limit: 10 });
 
   if (!transactions.length) {
