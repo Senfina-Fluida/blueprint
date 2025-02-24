@@ -22,6 +22,7 @@ export async function run(provider: NetworkProvider) {
   // Connect to Fluida contract using its address.
   const fluidaAddress = Address.parse("EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i");
 
+  const fluida = provider.open(new Fluida(fluidaAddress));
 
   // --- STEP 1: Prompt for hashLock ---
   const hashLockInput = await prompt("Enter the HashLock (as seen in readInfo) for the swap to complete: ");
