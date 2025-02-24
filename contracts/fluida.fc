@@ -104,8 +104,12 @@ int sha256_int256(int preimage) inline {
     return string_hash(s); ;; hash using TON's string_hash which is SHA256
 }
 
+
 ;; Serialize a Swap record.
 ;; Note: tokenAmount is stored as a 128-bit integer.
+
+;; Helpers to serialize/deserialize a Swap record
+
 builder buildSwap(
     slice initiator,
     slice recipient,

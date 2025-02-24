@@ -52,6 +52,7 @@ export async function run(provider: NetworkProvider) {
   const OP_DEPOSIT_NOTIFICATION = 0xDEADBEEFn; // 0xDEADBEEF = 3735928559
   const depositAmount = toNano(0.05);           // deposit amount in minimal units (modify as needed)
 
+
   // Use the jetton wallet as the minter (depositor). Modify if you have a separate minter contract.
   const minterContract = { address: jettonWalletAddress };
 

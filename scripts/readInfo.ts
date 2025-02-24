@@ -73,6 +73,7 @@ const TON_CONSOLE_ENDPOINT = 'https://ton-testnet.core.chainstack.com/7f51376bae
 // Replace with your actual deployed Fluida contract address.
 const fluidaAddress = Address.parse("EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i");
 
+
 const consoleProvider = {
   async get(method: string, params: any[]): Promise<{ stack: SimpleTupleReader }> {
     const convertedParams = params.map(param => {
