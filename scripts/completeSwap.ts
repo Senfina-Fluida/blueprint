@@ -20,8 +20,8 @@ function prompt(question: string): Promise<string> {
 
 export async function run(provider: NetworkProvider) {
   // Connect to Fluida contract using its address.
-  const fluidaAddress = Address.parse('EQBuH-HaipDBM4xWuDQsIOxZox6Gad9h-iho3QcF00ivJN6p');
-  const fluida = provider.open(new Fluida(fluidaAddress));
+  const fluidaAddress = Address.parse("EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i");
+
 
   // --- STEP 1: Prompt for hashLock ---
   const hashLockInput = await prompt("Enter the HashLock (as seen in readInfo) for the swap to complete: ");
@@ -75,8 +75,14 @@ export async function run(provider: NetworkProvider) {
   const preimageInput = await prompt("Enter the preimage to complete the swap (in hex or decimal): ");
   let preimage: bigint;
   try {
-    preimage = BigInt(preimageInput.trim());
+    let inputStr = preimageInput.trim();
+    // If the input doesn't start with "0x", assume it's hex and add the prefix.
+    if (!inputStr.startsWith("0x")) {
+      inputStr = "0x" + inputStr;
+    }
+    preimage = BigInt(inputStr);
   } catch (err) {
+    console.log(err);
     console.error("Invalid preimage input.");
     process.exit(1);
   }
@@ -106,7 +112,7 @@ export async function run(provider: NetworkProvider) {
   await fluida.sendCompleteSwap(provider.sender(), {
     swapId: targetSwapId,
     preimage,
-    value: toNano('0.005'),
+    value: toNano('0.2'),
   });
   console.log("Complete swap transaction sent.");
 }

@@ -71,7 +71,8 @@ function convertParam(param: any): string {
 const TON_CONSOLE_ENDPOINT = 'https://ton-testnet.core.chainstack.com/7f51376bae293d5148c231c1270a74f9/api/v2/runGetMethod';
 
 // Replace with your actual deployed Fluida contract address.
-const fluidaAddress = Address.parse('EQBuH-HaipDBM4xWuDQsIOxZox6Gad9h-iho3QcF00ivJN6p');
+const fluidaAddress = Address.parse("EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i");
+
 
 const consoleProvider = {
   async get(method: string, params: any[]): Promise<{ stack: SimpleTupleReader }> {
@@ -114,14 +115,15 @@ export async function run() {
   const fluida = new Fluida(fluidaAddress);
   console.log("Reading data from Fluida contract at address:", fluidaAddress.toString());
   try {
+    // Get the swap counter from the contract.
     const swapCounter = await fluida.getSwapCounter(consoleProvider as any);
     console.log("Swap Counter:", swapCounter.toString());
-    const tgBTCAddress = await fluida.getTgBTCAddress(consoleProvider as any);
-    console.log("tgBTCAddress stored in contract:", tgBTCAddress.toString());
+
     if (swapCounter > 0n) {
       console.log("Swaps:");
       for (let i = 0n; i < swapCounter; i++) {
         const exists = await fluida.hasSwap(consoleProvider as any, i);
+        console.log(`Checking swap id ${i.toString()}: exists = ${exists}`);
         if (exists) {
           const swap = await fluida.getSwap(consoleProvider as any, i);
           console.log(`Swap id ${i.toString()}:`);
@@ -142,3 +144,5 @@ export async function run() {
     console.error("Error reading contract state:", error);
   }
 }
+
+

@@ -2,15 +2,15 @@
 ;; File: Fluida.fc
 ;; -----------------------------------------------------------------
 
-#include "imports/stdlib.fc";
+#include "stdlib.fc";
 
 ;; -----------------------------------------------------------------
 ;; Constants & Error Codes
 ;; -----------------------------------------------------------------
-const OP_CREATE_SWAP      = 305419896;   ;; decimal 0x12345678
-const OP_COMPLETE_SWAP    = 2271560481;  ;; decimal 0x87654321
-const OP_REFUND_SWAP      = 2882400018;  ;; decimal 0xabcdef12
-const OP_INITIALIZE       = 1;           ;; New initialization operation
+const OP_COMPLETE_SWAP       = 2271560481;  ;; decimal 0x87654321
+const OP_REFUND_SWAP         = 2882400018;  ;; decimal 0xabcdef12
+const OP_INITIALIZE          = 1;           ;; New initialization operation
+const OP_DEPOSIT_NOTIFICATION = 3735928559; ;; decimal 0xDEADBEEF
 
 const ERR_INVALID_AMOUNT                  = 65521; ;; 0xfff1
 const ERR_INVALID_TIMELOCK                = 65522; ;; 0xfff2
@@ -18,58 +18,83 @@ const ERR_SWAP_COMPLETED                  = 65523; ;; 0xfff3
 const ERR_INVALID_PREIMAGE                = 65524; ;; 0xfff4
 const ERR_TIMELOCK_EXPIRED                = 65525; ;; 0xfff5
 const ERR_SWAP_ALREADY_COMPLETED_REFUND   = 65526; ;; 0xfff6
-const ERR_TIMELOCK_NOT_EXPIRED           = 65527;  ;; 0xfff7
+const ERR_TIMELOCK_NOT_EXPIRED            = 65527; ;; 0xfff7
 const ERR_INVALID_OPERATION               = 65535; ;; 0xffff
 const ERR_SWAP_NOT_FOUND                  = 65520; ;; 0xfff0
 const ERR_ALREADY_INITIALIZED             = 65519; ;; 0xffef
+const ERR_INVALID_JETTON                  = 65524;
+
+;; Error codes for specific checks
+
+const ERR_INVALID_OP                      = 401;
+const ERR_INVALID_FROM_ADDRESS            = 402;
+const ERR_INVALID_AMOUNT_TRANSFER         = 403;
+const ERR_INVALID_RESPONSE_ADDRESS        = 404;
+const ERR_NO_REFS                         = 405;
+const ERR_INVALID_FORWARD_PAYLOAD         = 406;
+const ERR_INVALID_FORWARD_SLICE           = 407;
+const ERR_INSUFFICIENT_BITS               = 408;
+const ERR_INVALID_FORWARD_OP              = 409;
+
+;; Specific parsing error codes
+const ERR_FAILED_BEGIN_PARSE                      = 510;
+const ERR_FAILED_LOAD_MSG_ADDR                    = 511;
+const ERR_FAILED_LOAD_UINT                        = 512;
+const ERR_FAILED_LOAD_REF                         = 513;
+const ERR_FAILED_PARSE_FORWARD_PAYLOAD            = 514;
+const ERR_FAILED_PARSE_FORWARD_SLICE              = 515;
+const ERR_FAILED_GET_SLICE_BITS                   = 516;
+const ERR_FAILED_DEPOSIT_NOTIFICATION             = 517;
+const ERR_FAILED_SLICE_REFS_COUNT                 = 518;
+const ERR_FAILED_CHECKING_REFS_EMPTY              = 519;
+const ERR_FAILED_CHECKING_SLICE_DATA_EMPTY        = 520;
+const ERR_FAILED_CHECKING_SLICE_EMPTY             = 521;
+
+
+;; Error codes transfer jetton
+const ERR_INSUFFICIENT_VALUE = 801;
+const ERR_EMPTY_TARGET = 802;
+const ERR_INVALID_AMOUNT_SEND_JETTON = 803;
+const ERR_EMPTY_WALLET = 804;
+const ERR_MSG_BUILD = 805;
+const ERR_BODY_BUILD = 806;
+const ERR_SEND_FAILED = 807;
 
 ;; -----------------------------------------------------------------
 ;; Global Variables (persistent storage)
 ;; -----------------------------------------------------------------
-;; Load values from c4 cell at start
+;; Storage now holds:
+;;  - jettonWallet: address of the approved jetton token wallet contract
+;;  - swapCounter: counter for swap IDs
+;;  - swaps: dictionary of swap records
+
 (slice, int, cell) load_data() inline {
     slice ds = get_data().begin_parse();
+    if (ds.slice_empty?()) {
+        return (my_address(), 0, new_dict());  
+    }
     return (
-        ds~load_msg_addr(),  ;; tgBTCAddress
+        ds~load_msg_addr(),  ;; jettonWallet address
         ds~load_uint(64),    ;; swapCounter
         ds~load_dict()       ;; swaps dictionary
     );
 }
 
-;; Save values to c4 cell
-() save_data(slice tgBTCAddress, int swapCounter, cell swaps) impure inline {
+() save_data(slice jettonWallet, int swapCounter, cell swaps) impure inline {
     set_data(
         begin_cell()
-            .store_slice(tgBTCAddress)
+            .store_slice(jettonWallet)
             .store_uint(swapCounter, 64)
             .store_dict(swaps)
             .end_cell()
     );
 }
 
-;; Initialize contract storage
-() initialize_storage(slice in_msg_body) impure {
-    ;; Load current data to check if already initialized
-    var (cur_tgBTCAddress, cur_swapCounter, cur_swaps) = load_data();
-    
-    ;; Check if address is empty (not initialized)
-    throw_if(ERR_ALREADY_INITIALIZED, cur_tgBTCAddress.preload_uint(2) != 0);
-    
-    ;; Read tgBTCAddress from message body
-    slice tgBTCAddress = in_msg_body~load_msg_addr();
-    
-    ;; Initialize with empty values
-    int swapCounter = 0;
-    cell swaps = new_dict();
-    
-    ;; Save initialized data
-    save_data(tgBTCAddress, swapCounter, swaps);
-}
-
 ;; -----------------------------------------------------------------
 ;; Helpers
 ;; -----------------------------------------------------------------
 
+;; Helper: compute sha256 of a 256-bit integer
 int sha256_int256(int preimage) inline {
     ;; Create a hasher
     slice s = begin_cell()
@@ -78,65 +103,214 @@ int sha256_int256(int preimage) inline {
         .begin_parse();
     return string_hash(s); ;; hash using TON's string_hash which is SHA256
 }
+
+
+;; Serialize a Swap record.
+;; Note: tokenAmount is stored as a 128-bit integer.
+
 ;; Helpers to serialize/deserialize a Swap record
+
 builder buildSwap(
     slice initiator,
     slice recipient,
-    int amount,
+    int tokenAmount,
     int hashLock,
     int timeLock,
     int isCompleted
 ) inline {
     return begin_cell()
-        .store_slice(initiator)     ;; store initiator address
-        .store_slice(recipient)     ;; store recipient address
-        .store_coins(amount)        ;; store amount of tokens
-        .store_uint(hashLock, 256)  ;; store hashLock
-        .store_uint(timeLock, 64)   ;; store timeLock
-        .store_uint(isCompleted, 1) ;; store isCompleted bit
+        .store_slice(initiator)         ;; initiator address
+        .store_slice(recipient)         ;; recipient address
+        .store_uint(tokenAmount, 128)   ;; jetton token amount (128-bit)
+        .store_uint(hashLock, 256)        ;; hashLock
+        .store_uint(timeLock, 64)         ;; timeLock
+        .store_uint(isCompleted, 1)       ;; isCompleted flag
     ;
 }
 
 (slice, slice, int, int, int, int) parseSwap(slice s) inline {
     return (
-        s~load_msg_addr(),   ;; initiator address
-        s~load_msg_addr(),   ;; recipient address
-        s~load_coins(),      ;; amount
-        s~load_uint(256),    ;; hashLock
-        s~load_uint(64),     ;; timeLock
-        s~load_uint(1)       ;; isCompleted (0 or 1)
+        s~load_msg_addr(),       ;; initiator address
+        s~load_msg_addr(),       ;; recipient address
+        s~load_uint(128),        ;; tokenAmount (128-bit)
+        s~load_uint(256),        ;; hashLock
+        s~load_uint(64),         ;; timeLock
+        s~load_uint(1)           ;; isCompleted flag (0 or 1)
     );
+}
+
+;; Helper: Store a new swap record in storage.
+() storeSwap(slice jettonWallet, int swapCounter, cell swaps,
+    slice initiator, slice recipient,
+    int tokenAmount, int hashLock, int timeLock) impure inline {
+    
+    ~strdump("=== STORING SWAP ===");
+    ~strdump("Swap Counter:");
+    ~dump(swapCounter);
+    
+    ~strdump("Initiator Address:");
+    ~dump(initiator);
+    
+    ~strdump("Recipient Address:");
+    ~dump(recipient);
+    
+    ~strdump("Token Amount:");
+    ~dump(tokenAmount);
+    
+    ~strdump("Hash Lock:");
+    ~dump(hashLock);
+    
+    ~strdump("Time Lock:");
+    ~dump(timeLock);
+    
+    builder b = buildSwap(initiator, recipient, tokenAmount, hashLock, timeLock, 0);
+    swaps~udict_set(256, swapCounter, b.end_cell().begin_parse());
+    
+    ~strdump("Swap stored. New counter will be:");
+    ~dump(swapCounter + 1);
+    
+    save_data(jettonWallet, swapCounter + 1, swaps);
+    ~strdump("=== SWAP STORAGE COMPLETE ===");
+}
+
+;; Helper: Send a jetton transfer message.
+() sendJettonTransfer(slice jettonWallet, slice target, int tokenAmount, int msg_value) impure inline {
+    ~strdump("Starting Jetton Transfer");
+    
+    ;; Constants for gas calculations
+    int fwd_fee = 50000000;  ;; 0.05 TON
+    int gas_consumption = 10000000;  ;; 0.01 TON
+    int min_tons_for_storage = 10000000;  ;; 0.01 TON
+    
+
+
+    try {
+        ;; Required value calculation
+        int forward_ton_amount = 10000000; ;; 0.01 TON for receiver
+        int required_value = forward_ton_amount + 2 * gas_consumption + fwd_fee + min_tons_for_storage;
+        
+        ;; Input validation with specific error messages
+        if (msg_value <= required_value) {
+            ~strdump("ERROR: Insufficient message value");
+            ~strdump("Required:");
+            ~dump(required_value);
+            ~strdump("Provided:");
+            ~dump(msg_value);
+            throw(ERR_INSUFFICIENT_VALUE);
+        }
+
+        if (target.slice_empty?()) {
+            ~strdump("ERROR: Empty target address");
+            throw(ERR_EMPTY_TARGET);
+        }
+
+        if (tokenAmount <= 0) {
+            ~strdump("ERROR: Invalid token amount");
+            ~dump(tokenAmount);
+            throw(ERR_INVALID_AMOUNT);
+        }
+
+        if (jettonWallet.slice_empty?()) {
+            ~strdump("ERROR: Empty jetton wallet address");
+            throw(ERR_EMPTY_WALLET);
+        }
+
+        var msg = null();
+        try {
+            msg = begin_cell()
+                .store_uint(0x18, 6)  ;; nobounce - 0b011000
+                .store_slice(jettonWallet)
+                .store_coins(0)
+                .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1);  ;; serialized message with 107 bits
+        } catch (_, _) {
+            ~strdump("ERROR: Failed to build message header");
+            throw(ERR_MSG_BUILD);
+        }
+
+        var msg_body = null();
+        try {
+            msg_body = begin_cell()
+                .store_uint(0xf8a7ea5, 32)  ;; transfer operation code
+                .store_uint(0, 64)          ;; query_id
+                .store_coins(tokenAmount)    ;; amount
+                .store_slice(target)         ;; destination address
+                .store_slice(target)         ;; response destination
+                .store_uint(0, 1)           ;; null custom_payload
+                .store_coins(forward_ton_amount)  ;; forward_ton_amount
+                .store_uint(0, 1);          ;; forward_payload in this slice, not in a ref
+        } catch (_, _) {
+            ~strdump("ERROR: Failed to build message body");
+            throw(ERR_BODY_BUILD);
+        }
+
+        msg = msg.store_ref(msg_body.end_cell());
+
+        ;; Try to send the message
+        try {
+            send_raw_message(msg.end_cell(), 64);  ;; mode 64 = carry all remaining value, revert on errors
+            ~strdump("Jetton transfer message sent successfully");
+        } catch (_, _) {
+            ~strdump("ERROR: Failed to send message");
+            throw(ERR_SEND_FAILED);
+        }
+
+    } catch (err) {
+        ;; ~strdump("Jetton transfer failed with error code:");
+        ;; ~dump(err);
+        throw(ERR_SEND_FAILED);
+    }
+}
+;; -----------------------------------------------------------------
+;; Initialize contract storage
+;; -----------------------------------------------------------------
+() initialize_storage(slice in_msg_body) impure {
+    ~strdump("ENTER INITIALIZE:");
+    
+    ;; Load current data
+    var (_, _, _) = load_data();
+    
+    ;; Read the jetton token wallet address from the message body
+    slice jettonWallet = in_msg_body~load_msg_addr();
+    ~strdump("JETTON WALLET:");
+    ~dump(jettonWallet);
+    
+    ;; Initialize with new values
+    cell swaps = new_dict();
+    
+    ;; Save new data
+    set_data(begin_cell()
+        .store_slice(jettonWallet)
+        .store_uint(0, 64)
+        .store_dict(swaps)
+        .end_cell());
+        
+    ~strdump("INITIALIZATION COMPLETE");
 }
 
 ;; -----------------------------------------------------------------
 ;; GETTERS (for off-chain calls)
 ;; -----------------------------------------------------------------
-
-;; Returns the current value of `swapCounter`
 int get_swap_counter() method_id {
     var (_, swapCounter, _) = load_data();
-    ~dump(242424);
-
+    ~dump("==SWAP COUNTER==");
     ~dump(swapCounter);
-
     return swapCounter;
 }
 
-;; Return the stored tgBTC address
-slice get_tgbtc_address() method_id {
-    var (tgBTCAddress, _, _) = load_data();
-    return tgBTCAddress;
+slice get_jetton_wallet() method_id {
+    var (jettonWallet, _, _) = load_data();
+    return jettonWallet;
 }
 
-;; Checks if a swap with `swapId` exists in the dictionary
 int has_swap(int swapId) method_id {
     var (_, _, swaps) = load_data();
     var (_, found) = swaps.udict_get?(256, swapId);
     return found ? 1 : 0;
 }
 
-;; Returns a 6-field tuple for the swap
 (slice, slice, int, int, int, int) get_swap(int swapId) method_id {
+    ~strdump("==GETTING SWAP DATA==");
+
     var (_, _, swaps) = load_data();
     var (swapData, found) = swaps.udict_get?(256, swapId);
     throw_unless(ERR_SWAP_NOT_FOUND, found);
@@ -144,65 +318,181 @@ int has_swap(int swapId) method_id {
 }
 
 ;; -----------------------------------------------------------------
-;; Functions that handle each operation
+;; Operation Handlers (jetton-only)
 ;; -----------------------------------------------------------------
-() createSwap(slice in_msg_body) impure {
-    var (tgBTCAddress, swapCounter, swaps) = load_data();
 
-    ;; Debug: Starting CREATE SWAP
-    ;;~strdump("CREATE SWAP");
+;; onJettonTransfer: Called when the contract receives a jetton token transfer.
+;; Expected message structure:
+;;   [ tokenSender address,
+;;     tokenAmount (128-bit),
+;;     remainingGasTo address,
+;;     payload ref ]
+() onJettonTransfer(slice in_msg_body) impure {
 
-    ;; Skip the 32-bit op code if present.
-    ;;if (in_msg_body.slice_bits() >= 32) {
-   ;;     ~strdump("Skipping op");
-      ;;  in_msg_body~skip_bits(32);
- ;;   }
-
-    ;; Load the sender's address from the message body.
-    ;; This works because the off-chain code explicitly stored the sender's address.
-    slice sender = in_msg_body~load_msg_addr();
-    slice initiator = sender;
-    slice recipient = sender;  ;; Use sender for both roles
-
-    ;;~strdump("Sender loaded:");
-   ;; ~dump(sender);
-
-    ;; Load the coins (using TON's special coin encoding)
-    int amount = in_msg_body~load_coins();
-  ;;  ~strdump("Amount loaded:");
-   ;; ~dump(amount);
-    throw_unless(36, amount > 0);
-
-    ;; Load the referenced cell containing extra data (hashLock and timeLock)
-    cell extra = in_msg_body~load_ref();
-    slice extra_slice = extra.begin_parse();  ;; Convert cell to slice
-
-    ;; Read the 256-bit hashLock from the extra slice
-    int hashLock = extra_slice~load_uint(256);
-   ;; ~strdump("HashLock loaded:");
-  ;;  ~dump(hashLock);
-
-    ;; Read the 64-bit timeLock from the extra slice
-    int timeLock = extra_slice~load_uint(64);
-  ;;  ~strdump("TimeLock loaded:");
-   ;; ~dump(timeLock);
-
-    ;; Build the swap using the helper function
-    builder b = buildSwap(initiator, recipient, amount, hashLock, timeLock, 0);
-
-    ;; Store the swap data in the swap dictionary using swapCounter as key
-    swaps~udict_set(256, swapCounter, b.end_cell().begin_parse());
-
-    ;; Save updated state: tgBTCAddress remains, swapCounter increments, and swaps updated
-    save_data(tgBTCAddress, swapCounter + 1, swaps);
+    var (jettonWallet, swapCounter, swaps) = load_data();
+    
+    slice tokenSender = in_msg_body~load_msg_addr();
+    int tokenAmount = in_msg_body~load_uint(128);
+    slice remainingGasTo = in_msg_body~load_msg_addr();
+    cell payload = in_msg_body~load_ref();
+    slice payloadSlice = payload.begin_parse();
+    
+    int hashLock = payloadSlice~load_uint(256);
+    int timeLock = payloadSlice~load_uint(64);
+    
+    ;; For this example, both the initiator and recipient are set to remainingGasTo.
+    slice initiator = remainingGasTo;
+    slice recipient = remainingGasTo;
+    
+    storeSwap(jettonWallet, swapCounter, swaps, initiator, recipient, tokenAmount, hashLock, timeLock);
 }
 
-() completeSwap(slice in_msg_body) impure {
-    ~strdump("COMPLETE SWAP - ENTER");
+;; depositNotification: Called when a deposit notification is received.
+;; Expected payload structure:
+;;   [ op code (32 bits), depositAmount (128-bit), depositor address,
+;;     recipient address (in a ref cell), hashLock (256-bit), timeLock (64-bit) ]
+() depositNotification(slice sender_address, slice in_msg_body) impure {
 
-    var (tgBTCAddress, swapCounter, swaps) = load_data();
+
+
+
+    ~strdump("=== DEPOSIT NOTIFICATION START ===");
     
-    ;; Read swapId and preimage from the message
+    ;; Load contract data and debug
+    var (jettonWallet, swapCounter, swaps) = load_data();
+    ~strdump("Contract Data Loaded:");
+    ~strdump("JettonWallet:");
+
+    throw_unless(ERR_INVALID_JETTON, equal_slices(sender_address, jettonWallet));
+
+    ~dump(jettonWallet);
+    ~strdump("SwapCounter:");
+    ~dump(swapCounter);
+    
+    ;; Debug incoming message
+    ~strdump("Incoming message body remaining bits:");
+    ~dump(in_msg_body.slice_bits());
+    ~strdump("Incoming message body remaining refs:");
+    ~dump(in_msg_body.slice_refs());
+    
+    ;; Try to parse depositAmount
+    ~strdump("Attempting to parse depositAmount...");
+    int depositAmount = 0;
+    try {
+        depositAmount = in_msg_body~load_uint(128);
+        ~strdump("Successfully parsed depositAmount:");
+        ~dump(depositAmount);
+    } catch (_, _) {
+        ~strdump("ERROR: Failed to parse depositAmount");
+        return ();
+    }
+    
+    ;; Try to parse depositor address
+    ~strdump("Attempting to parse depositor address...");
+    slice depositor = null();
+    try {
+        depositor = in_msg_body~load_msg_addr();
+        ~strdump("Successfully parsed depositor:");
+        ~dump(depositor);
+    } catch (_, _) {
+        ~strdump("ERROR: Failed to parse depositor address");
+        return ();
+    }
+    
+    ;; Check and load reference cells
+    ~strdump("Checking reference cells...");
+    ~strdump("Remaining refs before check:");
+    ~dump(in_msg_body.slice_refs());
+    
+    if (in_msg_body.slice_refs() < 2) {
+        ~strdump("ERROR: Not enough reference cells found");
+        return ();
+    }
+    
+    ;; Try to parse recipient from first ref
+    slice recipient = null();
+    try {
+        cell recipientRef = in_msg_body~load_ref();
+        ~strdump("First reference cell loaded");
+        slice recipientSlice = recipientRef.begin_parse();
+        ~strdump("First reference cell parsed");
+        ~strdump("Recipient slice bits:");
+        ~dump(recipientSlice.slice_bits());
+        
+        recipient = recipientSlice~load_msg_addr();
+        ~strdump("Successfully parsed recipient:");
+        ~dump(recipient);
+    } catch (_, _) {
+        ~strdump("ERROR: Failed to parse recipient from reference");
+        return ();
+    }
+    
+    ;; Try to parse hashLock and timeLock from second ref
+    int hashLock = 0;
+    int timeLock = 0;
+    try {
+        cell locksRef = in_msg_body~load_ref();
+        ~strdump("Second reference cell loaded");
+        slice locksSlice = locksRef.begin_parse();
+        ~strdump("Second reference cell parsed");
+        ~strdump("Locks slice bits:");
+        ~dump(locksSlice.slice_bits());
+        
+        hashLock = locksSlice~load_uint(256);
+        ~strdump("Successfully parsed hashLock:");
+        ~dump(hashLock);
+        
+        timeLock = locksSlice~load_uint(64);
+        ~strdump("Successfully parsed timeLock:");
+        ~dump(timeLock);
+    } catch (_, _) {
+        ~strdump("ERROR: Failed to parse locks from second reference");
+        return ();
+    }
+    
+    ;; Debug before storing
+    ~strdump("=== PRE-STORE VALIDATION ===");
+    ~strdump("All parameters parsed, validating...");
+    ~strdump("JettonWallet valid:");
+    ~dump(jettonWallet.slice_bits() > 0);
+    ~strdump("Depositor valid:");
+    ~dump(depositor.slice_bits() > 0);
+    ~strdump("Recipient valid:");
+    ~dump(recipient.slice_bits() > 0);
+    ~strdump("DepositAmount > 0:");
+    ~dump(depositAmount > 0);
+    ~strdump("HashLock != 0:");
+    ~dump(hashLock != 0);
+    ~strdump("TimeLock > now():");
+    ~dump(timeLock > now());
+    
+    ;; Try to store the swap
+    ~strdump("Attempting to store swap...");
+    try {
+        storeSwap(
+            jettonWallet,
+            swapCounter,
+            swaps,
+            depositor,
+            recipient,
+            depositAmount,
+            hashLock,
+            timeLock
+        );
+        ~strdump("Swap stored successfully");
+    } catch (_, _) {
+        ~strdump("ERROR: Failed to store swap");
+        return ();
+    }
+    
+    ~strdump("=== DEPOSIT NOTIFICATION COMPLETE ===");
+}
+
+;; completeSwap: Completes a swap if a valid preimage is provided.
+() completeSwap(slice in_msg_body, int msg_value) impure {
+    ~strdump("COMPLETE SWAP - ENTER");
+    var (jettonWallet, swapCounter, swaps) = load_data();
+    
     int swapId = in_msg_body~load_uint(256);
     int preimage = in_msg_body~load_uint(256);
     
@@ -210,8 +500,7 @@ int has_swap(int swapId) method_id {
     ~dump(swapId);
     ~strdump("Preimage received:");
     ~dump(preimage);
-
-    ;; Retrieve the swap data
+    
     var (swapData, found) = swaps.udict_get?(256, swapId);
     if (found == 0) {
         ~strdump("ERROR: Swap not found for swapId:");
@@ -219,31 +508,27 @@ int has_swap(int swapId) method_id {
     }
     throw_unless(ERR_SWAP_NOT_FOUND, found);
     
-    ;; Parse the swap record details
-    var (initiator, recipient, amount,
-         hashLock, timeLock, isCompleted) = parseSwap(swapData);
-
+    var (initiator, recipient, tokenAmount, hashLock, timeLock, isCompleted) = parseSwap(swapData);
+    
     ~strdump("Swap details:");
     ~strdump("Initiator:");
     ~dump(initiator);
     ~strdump("Recipient:");
     ~dump(recipient);
-    ~strdump("Amount:");
-    ~dump(amount);
+    ~strdump("Token Amount:");
+    ~dump(tokenAmount);
     ~strdump("Stored hashLock:");
     ~dump(hashLock);
     ~strdump("TimeLock:");
     ~dump(timeLock);
     ~strdump("IsCompleted:");
     ~dump(isCompleted);
-
-    ;; Check that the swap has not been completed yet
+    
     if (isCompleted) {
         ~strdump("ERROR: Swap already completed");
     }
     throw_if(ERR_SWAP_COMPLETED, isCompleted);
     
-    ;; Calculate the hash from the received preimage to verify it matches the stored hashLock
     int calculatedHash = sha256_int256(preimage);
     ~strdump("Calculated hash from preimage:");
     ~dump(calculatedHash);
@@ -255,103 +540,452 @@ int has_swap(int swapId) method_id {
     }
     throw_unless(ERR_INVALID_PREIMAGE, calculatedHash == hashLock);
     
-    ;; Check that the timelock has not expired
     if (now() >= timeLock) {
-       ~strdump("ERROR: Timelock expired. Now:");
-       ~dump(now());
-       ~strdump("TimeLock:");
-       ~dump(timeLock);
+        ~strdump("ERROR: Timelock expired. Now:");
+        ~dump(now());
+        ~strdump("TimeLock:");
+        ~dump(timeLock);
     }
     throw_if(ERR_TIMELOCK_EXPIRED, now() >= timeLock);
-
+    
     ~strdump("Marking swap as completed");
-    ;; Mark the swap as completed
-    builder newSwap = buildSwap(initiator, recipient, amount, hashLock, timeLock, 1);
+    builder newSwap = buildSwap(initiator, recipient, tokenAmount, hashLock, timeLock, 1);
     swaps~udict_set(256, swapId, newSwap.end_cell().begin_parse());
     
-    ;; Save the updated state
-    save_data(tgBTCAddress, swapCounter, swaps);
+    sendJettonTransfer(jettonWallet, recipient, tokenAmount, msg_value);
+    ~strdump("Jetton transfer message sent");
+
+    save_data(jettonWallet, swapCounter, swaps);
     ~strdump("Swap marked as completed and data saved");
 
-    ;; Sending the token transfer message
-    var msg = begin_cell()
-        .store_uint(0x18, 6)
-        .store_slice(tgBTCAddress)
-        .store_coins(0)
-        .store_uint(0, 107)
-        .store_ref(
-            begin_cell()
-                .store_uint(0x7362d09c, 32)
-                .store_slice(recipient)
-                .store_coins(amount)
-                .end_cell()
-        );
-    send_raw_message(msg.end_cell(), 64);
-    ~strdump("Token transfer message sent");
+
 }
 
-() refundSwap(slice in_msg_body) impure {
-    var (tgBTCAddress, swapCounter, swaps) = load_data();
+;; refundSwap: Refunds a swap when the timelock has expired.
+;; () refundSwap(slice in_msg_body) impure {
+;;     var (jettonWallet, swapCounter, swaps) = load_data();
     
-    int swapId = in_msg_body~load_uint(256);
+;;     int swapId = in_msg_body~load_uint(256);
+    
+;;     var (swapData, found) = swaps.udict_get?(256, swapId);
+;;     throw_unless(ERR_SWAP_NOT_FOUND, found);
+    
+;;     var (initiator, recipient, tokenAmount, hashLock, timeLock, isCompleted) = parseSwap(swapData);
+    
+;;     throw_if(ERR_SWAP_ALREADY_COMPLETED_REFUND, isCompleted);
+;;     throw_if(ERR_TIMELOCK_NOT_EXPIRED, now() < timeLock);
+    
+;;     sendJettonTransfer(jettonWallet, initiator, tokenAmount);
+;; }
 
-    var (swapData, found) = swaps.udict_get?(256, swapId);
-    throw_unless(ERR_SWAP_NOT_FOUND, found);
+;; () testFunction(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+;;     ~strdump("=== TRACKING INCOMING MESSAGE STATUS ===");
+    
+;;     ;; Load existing data
+;;     var (jettonWallet, swapCounter, swaps) = load_data();
+    
+;;     ;; Check status of each component
+;;     int msg_value_empty = (msg_value == 0);
+    
+;;     ;; Check if msg_full is empty (checking if it's null cell)
+;;     slice msg_full_slice = in_msg_full.begin_parse();
+;;     int msg_full_empty = msg_full_slice.slice_empty?();
+    
+;;     ;; Check if msg_body is empty
+;;     int msg_body_empty = in_msg_body.slice_empty?();
+    
+;;     ;; Calculate total empty count (0-3)
+;;     int total_empty = msg_value_empty + msg_full_empty + msg_body_empty;
+    
+;;     ;; Create status flags cell
+;;     cell status_data = begin_cell().end_cell();
+;;     var error_occurred = 0;
+    
+;;     try {
+;;         status_data = begin_cell()
+;;             ;; Store the value and its status
+;;             .store_uint(msg_value, 64)
+;;             .store_uint(msg_value_empty, 1)
+            
+;;             ;; Store msg_full reference and its status
+;;             .store_ref(in_msg_full)
+;;             .store_uint(msg_full_empty, 1)
+            
+;;             ;; Store msg_body and its status
+;;             .store_uint(msg_body_empty, 1)
+;;             .store_slice(in_msg_body)
+            
+;;             ;; Store summary data
+;;             .store_uint(total_empty, 2)  ;; Can be 0-3
+;;             .store_uint(error_occurred, 1)
+;;             .end_cell();
+            
+;;     } catch (_, _) {
+;;         error_occurred = 1;
+;;         ;; Fallback storage with just status flags
+;;         status_data = begin_cell()
+;;             .store_uint(0, 64)  ;; default value
+;;             .store_uint(1, 1)   ;; mark value as empty
+;;             .store_uint(1, 1)   ;; mark msg_full as empty
+;;             .store_uint(1, 1)   ;; mark msg_body as empty
+;;             .store_uint(3, 2)   ;; all empty (3)
+;;             .store_uint(1, 1)   ;; error occurred
+;;             .end_cell();
+;;     }
+    
+;;     ;; Save all data
+;;     set_data(begin_cell()
+;;         .store_slice(jettonWallet)
+;;         .store_uint(swapCounter, 64)
+;;         .store_dict(swaps)
+;;         .store_ref(status_data)
+;;         .end_cell());
+        
+;;     ;; Log the status
+;;     ~strdump("Message Status Summary:");
+;;     ~strdump(msg_value_empty ? "Value: Empty (0)" : "Value: Has content");
+;;     ~strdump(msg_full_empty ? "Full Message: Empty" : "Full Message: Has content");
+;;     ~strdump(msg_body_empty ? "Message Body: Empty" : "Message Body: Has content");
+;;     ~strdump("Total empty components: ");
+;;     ~dump(total_empty);
+;; }
 
-    var (initiator, recipient, amount,
-         hashLock, timeLock, isCompleted) = parseSwap(swapData);
+;; ;; Get whether msg_value was empty (0)
+;; int get_msg_value_empty() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     return status~load_uint(1);
+;; }
 
-    throw_if(ERR_SWAP_ALREADY_COMPLETED_REFUND, isCompleted);
-    throw_if(ERR_TIMELOCK_NOT_EXPIRED, now() < timeLock);
+;; ;; Get whether msg_full was empty
+;; int get_msg_full_empty() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     return status~load_uint(1);
+;; }
 
-    ;; Transfer tokens back
-    var msg = begin_cell()
-        .store_uint(0x18, 6)
-        .store_slice(tgBTCAddress)
-        .store_coins(0)
-        .store_uint(0, 107)
-        .store_ref(
-            begin_cell()
-                .store_uint(0x7362d09c, 32)
-                .store_slice(initiator)
-                .store_coins(amount)
-                .end_cell()
-        );
-    send_raw_message(msg.end_cell(), 64);
-}
+;; ;; Get whether msg_body was empty
+;; int get_msg_body_empty() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     status~load_uint(1);   ;; Skip msg_full empty flag
+;;     return status~load_uint(1);
+;; }
+
+;; ;; Get how many components were empty (0-3)
+;; int get_total_empty_count() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     status~load_uint(1);   ;; Skip msg_full empty flag
+;;     status~load_uint(1);   ;; Skip msg_body empty flag
+;;     return status~load_uint(2);
+;; }
+
+;; ;; Get whether any error occurred
+;; int get_error_occurred() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     status~load_uint(1);   ;; Skip msg_full empty flag
+;;     status~load_uint(1);   ;; Skip msg_body empty flag
+;;     status~load_uint(2);   ;; Skip total empty count
+;;     return status~load_uint(1);
+;; }
+
+;; ;; Get the actual msg_value
+;; int get_msg_value() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     return ds~load_ref().begin_parse().preload_uint(64);
+;; }
+
+;; ;; Get the full message cell
+;; cell get_msg_full() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     return status~load_ref();
+;; }
+
+;; slice get_msg_body() method_id {
+;;     slice ds = get_data().begin_parse();
+;;     ds~load_msg_addr();  ;; Skip jettonWallet
+;;     ds~load_uint(64);    ;; Skip swapCounter
+;;     ds~load_dict();      ;; Skip swaps
+;;     slice status = ds~load_ref().begin_parse();
+;;     status~load_uint(64);  ;; Skip value
+;;     status~load_uint(1);   ;; Skip value empty flag
+;;     status~load_ref();     ;; Skip msg_full
+;;     status~load_uint(1);   ;; Skip msg_full empty flag
+;;     status~load_uint(1);   ;; Skip msg_body empty flag
+;;     return status;  ;; The remaining slice contains the msg_body
+;; }
+
+
 
 ;; -----------------------------------------------------------------
 ;; The main entry point
 ;; -----------------------------------------------------------------
-
 () recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
-    ;; If no body, do nothing
+    ~strdump("-------------------------contract called:-------------------");
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    slice sender_address = cs~load_msg_addr();
+    ~strdump("REC_INTERNAL: ");
+    ~strdump("SENDER ADDRESS: ");
+    ~dump(sender_address);
+
     if (in_msg_body.slice_empty?()) {
         return ();
     }
-
-    ;; Read op from the message
-    int op = in_msg_body~load_uint(32);
     
+    ;; Read the first 32 bits to check for an op code.
+    int op = in_msg_body~load_uint(32);
+    ~strdump("OP:");
+    ~dump(op);
+
+    (slice jettonWallet, int x, cell y) = load_data();
+    ~strdump("jettonWallet:");
+    ~dump(jettonWallet);
+
+    ;; testFunction(msg_value, in_msg_full, in_msg_body);
+
+
     if (op == OP_INITIALIZE) {
         initialize_storage(in_msg_body);
         return ();
     }
     
-    if (op == OP_CREATE_SWAP) {
-        createSwap(in_msg_body);
-        return ();
-    }
-    
     if (op == OP_COMPLETE_SWAP) {
-        completeSwap(in_msg_body);
+        completeSwap(in_msg_body, msg_value);
         return ();
     }
     
-    if (op == OP_REFUND_SWAP) {
-        refundSwap(in_msg_body);
+    ;; if (op == OP_REFUND_SWAP) {
+    ;;     refundSwap(in_msg_body);
+    ;;     return ();
+    ;; }
+    
+    ;; Error codes for different scenarios
+
+    if (op == 0x7362d09c) { ;; JETTON_TRANSFER_NOTIFICATION
+        ;; Check if slice is empty
+        try {
+            throw_if(ERR_INVALID_FROM_ADDRESS, in_msg_body.slice_data_empty?());
+        } catch (err) {
+            ~strdump("Error checking if slice is empty for from_address");
+            throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
+        }
+    
+        ;; Load from_address
+        slice from_address = null();
+        try {
+            from_address = in_msg_body~load_msg_addr();
+        } catch (err) {
+            ~strdump("Error loading from_address");
+            throw(ERR_FAILED_LOAD_MSG_ADDR);
+        }
+    
+        ;; Check if address is empty
+        try {
+            throw_if(ERR_INVALID_FROM_ADDRESS, from_address.slice_empty?());
+        } catch (err) {
+            ~strdump("Error checking if from_address is empty");
+            throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
+        }
+    
+        ~strdump("from_address:");
+        ~dump(from_address);
+    
+        ;; Load amount
+        try {
+            throw_if(ERR_INVALID_AMOUNT_TRANSFER, in_msg_body.slice_data_empty?());
+        } catch (err) {
+            ~strdump("Error checking if slice is empty for amount");
+            throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
+        }
+    
+        int amount = 0;
+        try {
+            amount = in_msg_body~load_uint(128);
+        } catch (err) {
+            ~strdump("Error loading amount value");
+            throw(ERR_FAILED_LOAD_UINT);
+        }
+    
+        throw_if(ERR_INVALID_AMOUNT_TRANSFER, amount <= 0);
+        ~strdump("amount:");
+        ~dump(amount);
+    
+        ;; Load response_address with detailed error handling
+        try {
+            throw_if(ERR_INVALID_RESPONSE_ADDRESS, in_msg_body.slice_data_empty?());
+        } catch (err) {
+            ~strdump("Error checking if slice is empty for response_address");
+            throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
+        }
+    
+        slice response_address = sender_address;
+        ;; try {
+        ;;     response_address = in_msg_body~load_msg_addr();
+        ;;  } catch (err) {
+        ;;     ~strdump("Error loading response_address");
+        ;;     throw(ERR_FAILED_LOAD_MSG_ADDR);
+        ;;  }
+    
+        ;;   try {
+        ;;     throw_if(ERR_INVALID_RESPONSE_ADDRESS, response_address.slice_empty?());
+        ;;  } catch (err) {
+        ;;     ~strdump("Error checking if response_address is empty");
+        ;;     throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
+        ;;   }
+    
+        ;;  ~strdump("response_address:");
+        ~dump(response_address);
+    
+        ;; Check refs count
+        int slice_refs_count = 0;
+        try {
+            slice_refs_count = in_msg_body.slice_refs();
+        } catch (err) {
+            ~strdump("Error getting refs count");
+            throw(ERR_FAILED_SLICE_REFS_COUNT);
+        }
+    
+        throw_if(ERR_NO_REFS, slice_refs_count == 0);
+        ~strdump("slice_refs_count:");
+        ~dump(slice_refs_count);
+    
+        if (slice_refs_count > 0) {
+            ;; Check if refs are empty
+            try {
+                throw_if(ERR_INVALID_FORWARD_PAYLOAD, in_msg_body.slice_refs_empty?());
+            } catch (err) {
+                ~strdump("Error checking if refs are empty");
+                throw(ERR_FAILED_CHECKING_REFS_EMPTY);
+            }
+        
+            ;; Load ref
+            cell forward_payload = null();
+            try {
+                forward_payload = in_msg_body~load_ref();
+            } catch (err) {
+                ~strdump("Error loading forward_payload ref");
+                throw(ERR_FAILED_LOAD_REF);
+            }
+        
+            ;; Parse forward payload
+            slice forward_payload_slice = null();
+            try {
+                forward_payload_slice = forward_payload.begin_parse();
+            } catch (err) {
+                ~strdump("Error parsing forward_payload");
+                throw(ERR_FAILED_PARSE_FORWARD_PAYLOAD);
+            }
+        
+            try {
+                throw_if(ERR_INVALID_FORWARD_PAYLOAD, forward_payload_slice.slice_empty?());
+            } catch (err) {
+                ~strdump("Error checking if forward_payload_slice is empty");
+                throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
+            }
+        
+            ~strdump("forward_payload:");
+            ~dump(forward_payload);
+        
+            ;; Parse forward slice
+            slice forward_slice = null();
+            try {
+                forward_slice = forward_payload.begin_parse();
+            } catch (err) {
+                ~strdump("Error parsing forward_slice");
+                throw(ERR_FAILED_PARSE_FORWARD_SLICE);
+            }
+        
+            try {
+                throw_if(ERR_INVALID_FORWARD_SLICE, forward_slice.slice_empty?());
+            } catch (err) {
+                ~strdump("Error checking if forward_slice is empty");
+                throw(ERR_FAILED_CHECKING_SLICE_EMPTY);
+            }
+        
+            ~strdump("forward_slice:");
+            ~dump(forward_slice);
+        
+            ;; Get slice bits
+            int forward_slice_bits = 0;
+            try {
+                forward_slice_bits = forward_slice.slice_bits();
+            } catch (err) {
+                ~strdump("Error getting forward_slice bits");
+                throw(ERR_FAILED_GET_SLICE_BITS);
+            }
+        
+            throw_if(ERR_INSUFFICIENT_BITS, forward_slice_bits < 32);
+            ~strdump("forward_slice_bits:");
+            ~dump(forward_slice_bits);
+        
+            if (forward_slice_bits >= 32) {
+                ;; Load forward op
+                int forward_op = 0;
+                try {
+                    forward_op = forward_slice~load_uint(32);
+                } catch (err) {
+                    ~strdump("Error loading forward_op");
+                    throw(ERR_FAILED_LOAD_UINT);
+                }
+            
+                throw_if(ERR_INVALID_FORWARD_OP, forward_op <= 0);
+                ~strdump("forward_op:");
+                ~dump(forward_op);
+            
+                if (forward_op == OP_DEPOSIT_NOTIFICATION) {
+                    ~strdump("DEPOSIT_NOTIFICATION detected");
+                    try {
+                        depositNotification(sender_address, forward_slice);
+                    } catch (err) {
+                        ~strdump("Error executing deposit notification");
+                        throw(ERR_FAILED_DEPOSIT_NOTIFICATION);
+                    }
+                    return ();
+                }
+            }
+        }
         return ();
     }
+
     
-    throw(ERR_INVALID_OPERATION);
 }
