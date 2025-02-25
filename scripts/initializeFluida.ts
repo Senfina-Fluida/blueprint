@@ -13,10 +13,10 @@ import { NetworkProvider } from '@ton/blueprint';
 
 export async function run(provider: NetworkProvider) {
   // 1) The deployed Fluida contract address
-  const fluidaAddress = Address.parse("EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i");
+  const fluidaAddress = Address.parse("EQBQJn8uJwDldWNSXbsCbtk8VAAcxBE_QN8p97u0ctSirhh0");
   
   // 2) The new Jetton Wallet address you want to store in Fluida
-  const newJettonWalletAddress = Address.parse("EQCgl1weVoeMzLHZKaK5WT2WvXxp922Y7HipU0-kda9CBx5y");
+  const newJettonWalletAddress = Address.parse("EQDqVx54LcPErnxAoNeKO0JKx7ESgUKdPvTSrukOyMFA5fTC");
 
   // 3) Create the message body:
   //    - Store OP_INITIALIZE (which is 1 in your contract).

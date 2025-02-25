@@ -1,5 +1,5 @@
 import { toNano, Dictionary, Address } from '@ton/core';
-import { Fluida, FluidaConfig } from '../wrappers/Fluida';
+import { Fluida, FluidaConfig } from '../wrappers/FluidaDeploy';
 import { compile, NetworkProvider } from '@ton/blueprint';
 
 export async function run(provider: NetworkProvider) {

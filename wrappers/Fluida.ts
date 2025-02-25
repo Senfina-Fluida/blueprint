@@ -1,47 +1,43 @@
-import {
-  Address,
-  beginCell,
-  Cell,
-  Contract,
-  contractAddress,
-  ContractProvider,
-  Sender,
-  SendMode,
-  Dictionary,
+import { 
+  Address, 
+  Cell, 
+  beginCell, 
+  contractAddress, 
+  Sender, 
+  toNano, 
+  // tuple, 
+  TupleItem,
+  SendMode
 } from '@ton/core';
+import { Contract, ContractProvider } from '@ton/core';
 
-export type FluidaConfig = {
-  jettonWallet: Address; // Updated: now the jetton wallet contract address
-  swapCounter: bigint;
-  swaps: Dictionary<bigint, {
-    initiator: Address;
-    recipient: Address;
-    amount: bigint;
-    hashLock: bigint;
-    timeLock: bigint;
-    isCompleted: boolean;
-  }>;
-};
+export type FluidaConfig = {};
+
+// A helper to convert a FluidaConfig into a Cell.
+export function fluidaConfigToCell(config: FluidaConfig): Cell {
+  return beginCell().endCell();
+}
+
+// Exported constants – must match your FunC code.
+export const OP_INITIALIZE = 1;
+export const OP_COMPLETE_SWAP = 2271560481; // 0x87654321
 
 export class Fluida implements Contract {
-  constructor(
-    readonly address: Address,
-    readonly init?: { code: Cell; data: Cell }
-  ) {}
+  constructor(readonly address: Address, readonly init?: { code: Cell; data: Cell }) {}
 
-  static createFromConfig(config: FluidaConfig, code: Cell): Fluida {
-    const data = beginCell()
-      .storeAddress(config.jettonWallet)
-      .storeUint(config.swapCounter, 64)
-      .storeDict(config.swaps)
-      .endCell();
-
-    const init = { code, data };
-    const address = contractAddress(0, init);
-    return new Fluida(address, init);
+  static createFromAddress(address: Address): Fluida {
+    return new Fluida(address);
   }
 
-  async sendDeploy(provider: ContractProvider, via: Sender, value: bigint): Promise<void> {
+  static createFromConfig(config: FluidaConfig, code: Cell, workchain = 0): Fluida {
+    const data = fluidaConfigToCell(config);
+    const init = { code, data };
+    return new Fluida(contractAddress(workchain, init), init);
+  }
+
+  // ---- Message Sending Methods ----
+  // Deploy the contract using the provided provider.
+  async sendDeploy(provider: ContractProvider, via: Sender, value: bigint = toNano('0.05')): Promise<any> {
     await provider.internal(via, {
       value,
       sendMode: SendMode.PAY_GAS_SEPARATELY,
@@ -49,116 +45,83 @@ export class Fluida implements Contract {
     });
   }
 
-  // sendCreateSwap triggers the onJettonTransfer logic.
-  // Message layout:
-  //   [ dummyOpCode (32 bits),
-  //     tokenSender address,
-  //     tokenAmount (128-bit),
-  //     remainingGasTo address,
-  //     ref cell: { hashLock (256-bit), timeLock (64-bit) } ]
-  // In our tests, the sender’s address is used both as tokenSender and remainingGasTo.
-  async sendCreateSwap(
-    provider: ContractProvider,
-    via: Sender,
-    opts: {
-      amount: bigint;      // token amount (128-bit)
-      hashLock: bigint;
-      timeLock: bigint;
-      value: bigint;
-    }
-  ): Promise<void> {
-    const dummyOpCode = 0n; // Dummy op code to fall through to onJettonTransfer
-    await provider.internal(via, {
-      value: opts.value,
+  // Send an internal message using the provided provider.
+  async sendInternalMessage(provider: ContractProvider, via: Sender, value: bigint, body: Cell): Promise<any> {
+    return await provider.internal(via, {
+      value,
       sendMode: SendMode.PAY_GAS_SEPARATELY,
-      body: beginCell()
-        .storeUint(dummyOpCode, 32)
-        .storeAddress(via.address!)             // tokenSender (should match the jetton wallet)
-        .storeUint(opts.amount, 128)            // token amount (128-bit)
-        .storeAddress(via.address!)             // remainingGasTo (using same address for testing)
-        .storeRef(
-          beginCell()
-            .storeUint(opts.hashLock, 256)      // hashLock (256-bit)
-            .storeUint(opts.timeLock, 64)         // timeLock (64-bit)
-            .endCell()
-        )
-        .endCell(),
+      body,
     });
   }
 
-  async sendCompleteSwap(
-    provider: ContractProvider,
-    via: Sender,
-    opts: {
-      swapId: bigint;
-      preimage: bigint;
-      value: bigint;
-    }
-  ): Promise<void> {
-    const OP_COMPLETE_SWAP = 2271560481n; // 0x87654321
-    await provider.internal(via, {
-      value: opts.value,
-      sendMode: SendMode.PAY_GAS_SEPARATELY,
-      body: beginCell()
-        .storeUint(OP_COMPLETE_SWAP, 32)
-        .storeUint(opts.swapId, 256)
-        .storeUint(opts.preimage, 256)
-        .endCell(),
-    });
-  }
-
-  async sendRefundSwap(
-    provider: ContractProvider,
-    via: Sender,
-    opts: {
-      swapId: bigint;
-      value: bigint;
-    }
-  ): Promise<void> {
-    const OP_REFUND_SWAP = 2882400018n; // 0xabcdef12
-    await provider.internal(via, {
-      value: opts.value,
-      sendMode: SendMode.PAY_GAS_SEPARATELY,
-      body: beginCell()
-        .storeUint(OP_REFUND_SWAP, 32)
-        .storeUint(opts.swapId, 256)
-        .endCell(),
-    });
-  }
-
-  async getSwapCounter(provider: ContractProvider): Promise<bigint> {
+  // ---- Getter Methods (require provider as argument) ----
+  async get_swap_counter(provider: ContractProvider): Promise<bigint> {
     const result = await provider.get('get_swap_counter', []);
     return result.stack.readBigNumber();
   }
 
-  // Updated getter: now returns the jetton wallet address.
-  async getJettonWallet(provider: ContractProvider): Promise<Address> {
+  async get_jetton_wallet(provider: ContractProvider): Promise<Address> {
     const result = await provider.get('get_jetton_wallet', []);
     return result.stack.readAddress();
   }
 
-  async getSwap(provider: ContractProvider, swapId: bigint): Promise<{
-    initiator: Address;
-    recipient: Address;
-    amount: bigint;
-    hashLock: bigint;
-    timeLock: bigint;
-    isCompleted: boolean;
-  }> {
-    const result = await provider.get('get_swap', [{ type: 'int', value: swapId }]);
-    const stack = result.stack;
-    return {
-      initiator: stack.readAddress(),
-      recipient: stack.readAddress(),
-      amount: stack.readBigNumber(),
-      hashLock: stack.readBigNumber(),
-      timeLock: stack.readBigNumber(),
-      isCompleted: stack.readBoolean(),
-    };
+  // ---- Tuple Encoding for swapId ----
+  private encodeSwapId(swapId: number): TupleItem[] {
+    const idCell = beginCell().storeUint(swapId, 256).endCell();
+    return [{
+      type: 'cell',
+      cell: idCell
+    }];
   }
 
-  async hasSwap(provider: ContractProvider, swapId: bigint): Promise<boolean> {
-    const result = await provider.get('has_swap', [{ type: 'int', value: swapId }]);
-    return result.stack.readBoolean();
+  async has_swap(provider: ContractProvider, swapId: number): Promise<number> {
+    const param = this.encodeSwapId(swapId);
+    const result = await provider.get('has_swap', param);
+    return result.stack.readNumber();
+  }
+
+  async get_swap(provider: ContractProvider, swapId: number): Promise<[Address, Address, bigint, bigint, number, number]> {
+    const param = this.encodeSwapId(swapId);
+    const result = await provider.get('get_swap', param);
+    const initiator = result.stack.readAddress();
+    const recipient = result.stack.readAddress();
+    const tokenAmount = result.stack.readBigNumber();
+    const hashLock = result.stack.readBigNumber();
+    const timeLock = result.stack.readNumber();
+    const isCompleted = result.stack.readNumber();
+    return [initiator, recipient, tokenAmount, hashLock, timeLock, isCompleted];
+  }
+
+  // ---- Test-Only Helper ----
+  // Simulate storing a swap record by sending a crafted jetton transfer notification.
+  async testStoreSwap(
+    provider: ContractProvider,
+    via: Sender,
+    initiator: Address,
+    recipient: Address,
+    tokenAmount: bigint,
+    hashLock: bigint,
+    timeLock: number
+  ): Promise<any> {
+    const innerBody = beginCell()
+      .storeAddress(initiator)
+      .storeUint(tokenAmount, 128)
+      .storeAddress(recipient)
+      .storeRef(
+        beginCell()
+          .storeUint(hashLock, 256)
+          .storeUint(timeLock, 64)
+          .endCell()
+      )
+      .endCell();
+    const fullBody = beginCell()
+      .storeUint(0x7362d09c, 32) // op code for jetton transfer notification
+      .storeSlice(innerBody.beginParse())
+      .endCell();
+    return await this.sendInternalMessage(provider, via, toNano("0.05"), fullBody);
+  }
+
+  async getTransactions(provider: ContractProvider, lt?: bigint, hash?: Buffer, limit: number = 16): Promise<any[]> {
+    return provider.getTransactions(this.address, lt!, hash!, limit);
   }
 }

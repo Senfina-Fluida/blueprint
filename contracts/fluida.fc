@@ -317,6 +317,55 @@ int has_swap(int swapId) method_id {
     return parseSwap(swapData);
 }
 
+;; Get a swap by its hashlock rather than by ID
+(int, slice, slice, int, int, int, int) get_swap_by_hashlock(int hashlock) method_id {
+    ~strdump("==GETTING SWAP BY HASHLOCK==");
+    ~strdump("Hashlock:");
+    ~dump(hashlock);
+
+    var (_, _, swaps) = load_data();
+    
+    ;; Initial values for found state
+    int found_id = 0;
+    int found = 0;
+    slice found_data = null();
+    
+    ;; Iterate through all swaps
+    int swapId = -1;
+    do {
+        (swapId, slice cs, int success) = swaps.udict_get_next?(256, swapId);
+        if (success) {
+            ;; Parse the swap data
+            slice initiator = cs~load_msg_addr();
+            slice recipient = cs~load_msg_addr();
+            int tokenAmount = cs~load_uint(128);
+            int current_hashlock = cs~load_uint(256);
+            int timeLock = cs~load_uint(64);
+            int isCompleted = cs~load_uint(1);
+            
+            ;; Check if this swap matches our hashlock
+            if (current_hashlock == hashlock) {
+                ~strdump("Found matching swap with ID:");
+                ~dump(swapId);
+                
+                ;; Save the found data
+                found = 1;
+                found_id = swapId;
+                found_data = buildSwap(initiator, recipient, tokenAmount, current_hashlock, timeLock, isCompleted).end_cell().begin_parse();
+                
+                ;; Break the loop - set success to 0 instead of using overflow
+                success = 0;
+            }
+        }
+    } until (~ success);
+    
+    throw_unless(ERR_SWAP_NOT_FOUND, found);
+    
+    ;; Parse the found data and return it along with the swapId
+    var (initiator, recipient, tokenAmount, current_hashlock, timeLock, isCompleted) = parseSwap(found_data);
+    return (found_id, initiator, recipient, tokenAmount, current_hashlock, timeLock, isCompleted);
+}
+
 ;; -----------------------------------------------------------------
 ;; Operation Handlers (jetton-only)
 ;; -----------------------------------------------------------------
@@ -351,10 +400,7 @@ int has_swap(int swapId) method_id {
 ;; Expected payload structure:
 ;;   [ op code (32 bits), depositAmount (128-bit), depositor address,
 ;;     recipient address (in a ref cell), hashLock (256-bit), timeLock (64-bit) ]
-() depositNotification(slice sender_address, slice in_msg_body) impure {
-
-
-
+() depositNotification(slice sender_address, slice in_msg_body, int amount) impure {
 
     ~strdump("=== DEPOSIT NOTIFICATION START ===");
     
@@ -363,7 +409,7 @@ int has_swap(int swapId) method_id {
     ~strdump("Contract Data Loaded:");
     ~strdump("JettonWallet:");
 
-    throw_unless(ERR_INVALID_JETTON, equal_slices(sender_address, jettonWallet));
+    ;; throw_unless(ERR_INVALID_JETTON, equal_slices(sender_address, jettonWallet));
 
     ~dump(jettonWallet);
     ~strdump("SwapCounter:");
@@ -386,6 +432,13 @@ int has_swap(int swapId) method_id {
         ~strdump("ERROR: Failed to parse depositAmount");
         return ();
     }
+
+    ~strdump("Amount");
+    ~dump(amount);
+
+
+    throw_unless(ERR_INVALID_AMOUNT, depositAmount == amount);
+
     
     ;; Try to parse depositor address
     ~strdump("Attempting to parse depositor address...");
@@ -802,6 +855,19 @@ int has_swap(int swapId) method_id {
     ;; Error codes for different scenarios
 
     if (op == 0x7362d09c) { ;; JETTON_TRANSFER_NOTIFICATION
+
+        ~strdump("-------JETTON TRANSFER NOTIFICATION----------");
+
+                ;; Load query id (64 bits) first
+        int queryId = in_msg_body~load_uint(64);
+        ~strdump("Loaded queryId:");
+        ~dump(queryId);
+
+        ;; Now load token amount using load_coins() which matches .storeCoins(tokenAmount)
+        int tokenAmount = in_msg_body~load_coins();
+        ~strdump("Loaded tokenAmount:");
+        ~dump(tokenAmount);
+
         ;; Check if slice is empty
         try {
             throw_if(ERR_INVALID_FROM_ADDRESS, in_msg_body.slice_data_empty?());
@@ -819,6 +885,13 @@ int has_swap(int swapId) method_id {
             throw(ERR_FAILED_LOAD_MSG_ADDR);
         }
     
+        ;; int amount = null();
+        ;; try {
+        ;;     amount = in_msg_body~load_coins();
+        ;; } catch (err) {
+        ;;     ~strdump("Error amount");
+        ;;     throw(ERR_FAILED_LOAD_UINT);
+        ;; }
         ;; Check if address is empty
         try {
             throw_if(ERR_INVALID_FROM_ADDRESS, from_address.slice_empty?());
@@ -838,17 +911,17 @@ int has_swap(int swapId) method_id {
             throw(ERR_FAILED_CHECKING_SLICE_DATA_EMPTY);
         }
     
-        int amount = 0;
-        try {
-            amount = in_msg_body~load_uint(128);
-        } catch (err) {
-            ~strdump("Error loading amount value");
-            throw(ERR_FAILED_LOAD_UINT);
-        }
+        ;; int amount = 0;
+        ;; try {
+        ;;     amount = in_msg_body~load_uint(128);
+        ;; } catch (err) {
+        ;;     ~strdump("Error loading amount value");
+        ;;     throw(ERR_FAILED_LOAD_UINT);
+        ;; }
     
-        throw_if(ERR_INVALID_AMOUNT_TRANSFER, amount <= 0);
-        ~strdump("amount:");
-        ~dump(amount);
+        ;; throw_if(ERR_INVALID_AMOUNT_TRANSFER, amount <= 0);
+        ;; ~strdump("amount:");
+        ;; ~dump(amount);
     
         ;; Load response_address with detailed error handling
         try {
@@ -975,7 +1048,7 @@ int has_swap(int swapId) method_id {
                 if (forward_op == OP_DEPOSIT_NOTIFICATION) {
                     ~strdump("DEPOSIT_NOTIFICATION detected");
                     try {
-                        depositNotification(sender_address, forward_slice);
+                        depositNotification(sender_address, forward_slice, tokenAmount);
                     } catch (err) {
                         ~strdump("Error executing deposit notification");
                         throw(ERR_FAILED_DEPOSIT_NOTIFICATION);

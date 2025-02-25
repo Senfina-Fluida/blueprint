@@ -7,7 +7,7 @@ import { randomBytes } from 'crypto';
 // --- Throttling Helper ---
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
+}0
 
 async function withRetry<T>(
   operation: () => Promise<T>,
@@ -40,7 +40,7 @@ export async function run(provider: NetworkProvider) {
   console.log("Jetton Wallet Address:", jettonWalletAddress.toString());
 
   // 3. Set the destination as the Fluida contract address.
-  const fluidaAddress = Address.parse("EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i");
+  const fluidaAddress = Address.parse("EQBQJn8uJwDldWNSXbsCbtk8VAAcxBE_QN8p97u0ctSirhh0");
   console.log("Fluida Contract Address:", fluidaAddress.toString());
 
   // 4. Define parameters.
@@ -50,7 +50,7 @@ export async function run(provider: NetworkProvider) {
 
   // 5. Build the deposit-notification forward payload with an extra cell for hashLock/timeLock.
   const OP_DEPOSIT_NOTIFICATION = 0xDEADBEEFn; // 0xDEADBEEF = 3735928559
-  const depositAmount = toNano(0.05);           // deposit amount in minimal units (modify as needed)
+  const depositAmount =toNano(0.05);           // deposit amount in minimal units (modify as needed)
 
 
   // Use the jetton wallet as the minter (depositor). Modify if you have a separate minter contract.

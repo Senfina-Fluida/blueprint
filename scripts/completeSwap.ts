@@ -1,5 +1,5 @@
 import { toNano, Address } from '@ton/core';
-import { Fluida } from '../wrappers/Fluida';
+import { Fluida } from '../wrappers/FluidaDeploy';
 import { NetworkProvider } from '@ton/blueprint';
 import { calculateHashLock } from './utils/hashHelper';
 import readline from 'readline';
@@ -20,7 +20,7 @@ function prompt(question: string): Promise<string> {
 
 export async function run(provider: NetworkProvider) {
   // Connect to Fluida contract using its address.
-  const fluidaAddress = Address.parse("EQAklm3nyaHLy49ePLVMBZwwfQd6WdQDD2Aboa8Vpw6f3e-i");
+  const fluidaAddress = Address.parse("EQC58-q-q7zgtV2wcqQk5CQQvf_S9rGn8wcYnvXKhcjPrZRX");
 
   const fluida = provider.open(new Fluida(fluidaAddress));
 

@@ -1,519 +1,393 @@
-// -----------------------------------------------------------------
-// File: tests/Fluida.spec.ts
-// -----------------------------------------------------------------
 import { Blockchain, SandboxContract, TreasuryContract } from '@ton/sandbox';
-import { Cell, toNano, Address, Dictionary, beginCell, internal } from '@ton/core';
-import { Fluida } from '../wrappers/Fluida';
-import { Address as AddressTon, beginCell as beginCellTon, toNano as tonNanoTon } from "ton";
-import crypto from 'crypto';
-
+import { Cell, beginCell, toNano, Address, SendMode } from '@ton/core';
+import { Fluida, OP_INITIALIZE, OP_COMPLETE_SWAP } from '../wrappers/Fluida';
+import { JettonWallet } from '../wrappers/JettonWallet';
 import '@ton/test-utils';
 import { compile } from '@ton/blueprint';
-import BN from "bn.js";
+import { calculateHashLock } from '../scripts/utils/hashHelper';
 
-// Jetton stuff
-import { internalMessage, randomAddress } from "./helpers";
-import { JettonMinter } from "./lib/jetton-minter";
-import { actionToMessage } from "./lib/utils";
-import { JettonWallet } from "./lib/jetton-wallet";
-import { parseJettonDetails, parseJettonWalletDetails } from "./lib/jetton-utils";
+describe('Fluida Contract Tests', () => {
+  let blockchain: Blockchain;
+  let treasury: SandboxContract<TreasuryContract>;
+  let recipient: SandboxContract<TreasuryContract>;
 
-import {
-  JETTON_WALLET_CODE,
-  JETTON_MINTER_CODE,
-  jettonMinterInitData,
-} from "../build/jetton-minter.deploy";
-
-// Test addresses
-const OWNER_ADDRESS = randomAddress("owner");
-const PARTICIPANT_ADDRESS_1 = randomAddress("participant_1");
-const PARTICIPANT_ADDRESS_2 = randomAddress("participant_2");
-
-// Helper: Create a JettonWallet contract for a given owner & jetton master address
-const getJWalletContract = async (
-  walletOwnerAddress: AddressTon,
-  jettonMasterAddress: AddressTon
-): Promise<JettonWallet> =>
-  await JettonWallet.create(
-    JETTON_WALLET_CODE,
-    beginCellTon()
-      .storeCoins(0)
-      .storeAddress(walletOwnerAddress)
-      .storeAddress(jettonMasterAddress)
-      .storeRef(JETTON_WALLET_CODE)
-      .endCell()
-  );
-
-describe.skip('Fluida', () => {
+  let fluida: SandboxContract<Fluida>;
   let fluidaCode: Cell;
   let jettonWalletCode: Cell;
-  let minterContract: JettonMinter;
-  let blockchain: Blockchain;
-  let deployer: SandboxContract<TreasuryContract>;
-  let fluida: SandboxContract<Fluida>;
-  let jettonMinter : SandboxContract<JettonMinter>;
+  
+  // Define constants
+  const OP_DEPOSIT_NOTIFICATION = 0xDEADBEEFn;
+  const JETTON_TRANSFER_OP = 0x0f8a7ea5; // op code for jetton transfer
 
+  // For direct jetton handling
+  let jettonWallet: SandboxContract<JettonWallet>;
+  let jettonWalletAddress: Address;
 
-
-  // Create an empty dictionary for swaps (using 256-bit keys).
-  const emptySwaps = Dictionary.empty<bigint, {
-    initiator: Address;
-    recipient: Address;
-    amount: bigint;
-    hashLock: bigint;
-    timeLock: bigint;
-    isCompleted: boolean;
-  }>(Dictionary.Keys.BigInt(256));
-
-  /**
-   * Converts a Buffer to a bigint assuming big-endian order.
-   */
-  function bufferToBigInt(buffer: Buffer): bigint {
-    let result = 0n;
-    for (const byte of buffer) {
-      result = (result << 8n) | BigInt(byte);
-    }
-    return result;
-  }
-
-  /**
-   * Computes hashLock by storing `preimage` as a 256-bit integer in a cell
-   * and returning the cell's hash as a bigint.
-   */
-  function computeHashLock(preimage: bigint): bigint {
-    const cell = beginCell().storeUint(preimage, 256).endCell();
-    const hashBuffer = cell.hash(); // Returns a Buffer
-    return bufferToBigInt(hashBuffer);
-  }
-
+  // Load the compiled contract cells from file
   beforeAll(async () => {
-    console.log('🔧 Compiling Fluida contract...');
     fluidaCode = await compile('Fluida');
-    console.log('✅ Fluida compilation successful.');
-    console.log('🔧 Compiling JettonWallet contract...');
     jettonWalletCode = await compile('JettonWallet');
-    console.log('✅ JettonWallet compilation successful.');
   });
 
+  // Create a fresh blockchain instance and deploy the contracts before each test
   beforeEach(async () => {
-    console.log('\n🔄 Starting beforeEach setup...');
     blockchain = await Blockchain.create();
-
-    const dataCell = jettonMinterInitData(OWNER_ADDRESS, {
-      name: "MY_JETTON",
-      symbol: "MJT",
-      description: "My Long Description".repeat(100)
-    });
-    minterContract = (await JettonMinter.create(JETTON_MINTER_CODE, dataCell)) as JettonMinter;
-
-    deployer = await blockchain.treasury('deployer');
-    console.log(`👤 Deployer address: ${deployer.address}`);
-
-    const call = await minterContract.contract.invokeGetMethod("get_jetton_data", []);
-    const { totalSupply, address, metadata } = parseJettonDetails(call);
-
-    console.log("ABOUT TO DEPLOY");
-    console.log("MINTERContract", minterContract.address.toString());
-    console.log("PARTICIPANT_ADDRESS_1", PARTICIPANT_ADDRESS_1);
-
-
-    // console.log("test", Address.parse("00f56801bb0889efbf0b972af835a9319e8d1f6c35ee676f874c8bd888712f2960d3583d003e54f2aae332fc190fca2f68f97c0be09db5d2c4dd2ea3cfdb7ebe6b32c32c11900bebc2000000000000000000000000000000000000c009fbdf812dadcbf37ba457dcf5b0e36f6fc0bb5bfe4961eca8d06773e90754f998"))
-
-    // Deploy Fluida using the JETTON MASTER address (minterContract.address).
-    fluida = blockchain.openContract(
-      Fluida.createFromConfig(
-        {
-          jettonWallet: Address.parse(minterContract.address.toString()),
-          swapCounter: 0n,
-          swaps: emptySwaps,
-        },
-        fluidaCode
-      )
-    );
-    await fluida.sendDeploy(deployer.getSender(), toNano('0.05'));
-    console.log('✅ Fluida contract deployed successfully.');
-    console.log('✅ "should deploy" test passed.');
-
-    console.log("about to set jetton wallet (minter) address");
-
-    // Rename the op code for clarity.
-    const OP_SET_JETTON_WALLET = 1; // Using 1 for setting the jetton wallet address
-
-    // Build the payload to set the jetton wallet.
-    const setJettonWalletPayload = beginCell()
-      .storeUint(OP_SET_JETTON_WALLET, 32)
-      .storeAddress(Address.parse(minterContract.address.toString())) // minter address stored in the payload
+    treasury = await blockchain.treasury('deployer');
+    recipient = await blockchain.treasury('recipient');
+    
+    // Deploy the Fluida contract
+    fluida = blockchain.openContract(Fluida.createFromConfig({}, fluidaCode));
+    await fluida.sendDeploy(treasury.getSender(), toNano("0.05"));
+    
+    // Deploy a mock JettonWallet contract
+    jettonWallet = blockchain.openContract(JettonWallet.createFromConfig({
+      master: treasury.address,
+      owner: treasury.address,
+      jettonAmount: toNano('100') // Give the wallet 100 jettons
+    }, jettonWalletCode));
+    
+    await jettonWallet.sendDeploy(treasury.getSender(), toNano("0.05"));
+    jettonWalletAddress = jettonWallet.address;
+    
+    // Initialize Fluida with the jetton wallet address
+    const initBody = beginCell()
+      .storeUint(OP_INITIALIZE, 32)
+      .storeAddress(jettonWalletAddress)
       .endCell();
-    console.log('📦 Set jetton wallet payload built:', setJettonWalletPayload.toString());
-
-    // Build and send the message to set the jetton wallet.
-    const setJettonWalletMsg = internal({
-      to: fluida.address,
-      value: toNano('0.05'),
-      body: setJettonWalletPayload,
-    });
-    const setJettonWalletMsgFixed = {
-      ...setJettonWalletMsg,
-      info: {
-        ...setJettonWalletMsg.info,
-        src: Address.parse(PARTICIPANT_ADDRESS_1.toString()),
-      }
-    } as import('@ton/core').Message;
-    await blockchain.sendMessage(setJettonWalletMsgFixed);
+    
+    await fluida.sendInternalMessage(treasury.getSender(), toNano("0.05"), initBody);
   });
 
-  it('should deploy and set the jetton wallet (minter) address correctly', async () => {
+  it('should initialize storage correctly with jetton wallet', async () => {
+    // Verify via getters that the Fluida contract has the correct wallet
+    const storedWallet = await fluida.get_jetton_wallet();
+    expect(storedWallet.toString()).toEqual(jettonWalletAddress.toString());
 
-    // Before 
-
+    const swapCounter = await fluida.get_swap_counter();
+    expect(Number(swapCounter)).toEqual(0);
   });
 
+  // it('should directly create and complete a swap without jetton transfer', async () => {
+  //   // In this test, we'll skip the jetton transfer part and just send a direct deposit notification
+  //   // to simulate the process directly
+    
+  //   // Setup swap parameters
+  //   const initiator = treasury.address;
+  //   const recipientAddr = recipient.address;
+  //   const tokenAmount = toNano("1");
+  //   const preimage = BigInt('0x' + '123456789'.padStart(64, '0')); 
+  //   const hashLock = calculateHashLock(preimage);
+  //   const currentTime = Math.floor(Date.now() / 1000);
+  //   const timeLock = BigInt(currentTime + 3600);
+    
+  //   // Create the extra cell for hashLock and timeLock
+  //   const extraCell = beginCell()
+  //     .storeUint(hashLock, 256)
+  //     .storeUint(timeLock, 64)
+  //     .endCell();
+    
+  //   // Create the deposit notification payload directly
+  //   const depositNotificationPayload = beginCell()
+  //     .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
+  //     .storeUint(tokenAmount, 128)
+  //     .storeAddress(initiator)
+  //     .storeRef(
+  //       beginCell()
+  //         .storeAddress(recipientAddr)
+  //         .endCell()
+  //     )
+  //     .storeRef(extraCell)
+  //     .endCell();
+    
+  //   // Send the deposit notification directly to Fluida
+  //   await fluida.sendInternalMessage(
+  //     treasury.getSender(),
+  //     toNano("0.1"),
+  //     depositNotificationPayload
+  //   );
+    
+  //   // Verify the swap was created
+  //   const swapCounter = await fluida.get_swap_counter();
+  //   expect(Number(swapCounter)).toEqual(1);
+    
+  //   // Get the swap data to verify it was stored correctly
+  //   const swapData = await fluida.get_swap(0);
+  //   expect(swapData[0].toString()).toEqual(initiator.toString());
+  //   expect(swapData[1].toString()).toEqual(recipientAddr.toString());
+  //   expect(swapData[2].toString()).toEqual(tokenAmount.toString());
+  //   expect(swapData[3].toString()).toEqual(hashLock.toString());
+  //   expect(swapData[4].toString()).toEqual(timeLock.toString());
+  //   expect(Number(swapData[5])).toEqual(0);
+    
+  //   // Now complete the swap with the correct preimage
+  //   const completeBody = beginCell()
+  //   .storeUint(OP_COMPLETE_SWAP, 32)
+  //     .storeUint(0, 256)        // swapId = 0
+  //     .storeUint(preimage, 256) // correct preimage
+  //     .endCell();
+    
+  //   // Send the complete message from the recipient
+  //   const result = await fluida.sendInternalMessage(
+  //     recipient.getSender(), 
+  //     toNano("0.2"), 
+  //     completeBody
+  //   );
+    
+  //   // Verify that the swap is marked as completed
+  //   const updatedSwapData = await fluida.get_swap(0);
+  //   expect(Number(updatedSwapData[5])).toEqual(1);
+    
+  //   // Verify there were outgoing transactions
+  //   expect(result.transactions.length).toBeGreaterThan(1);
+  // });
+  
+  // it('should create swap via createSwap script approach and complete it', async () => {
+  //   // This test attempts to closely mimic what the createSwap.ts script does
+    
+  //   // Setup swap parameters
+  //   const initiator = treasury.address;
+  //   const recipientAddr = recipient.address;
+  //   const tokenAmount = toNano("0.05");  // same as in createSwap.ts
+  //   const preimage = BigInt('0x' + '123456789'.padStart(64, '0'));
+  //   const hashLock = calculateHashLock(preimage);
+  //   const currentTime = Math.floor(Date.now() / 1000);
+  //   const timeLock = BigInt(currentTime + 3600);
+    
+  //   // Create the extra cell for hashLock and timeLock
+  //   const extraCell = beginCell()
+  //     .storeUint(hashLock, 256)
+  //     .storeUint(timeLock, 64)
+  //     .endCell();
+    
+  //   // Create the deposit notification payload like in createSwap.ts
+  //   const depositNotificationPayload = beginCell()
+  //     .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
+  //     .storeUint(tokenAmount, 128)
+  //     .storeAddress(initiator)
+  //     .storeRef(
+  //       beginCell()
+  //         .storeAddress(recipientAddr)
+  //         .endCell()
+  //     )
+  //     .storeRef(extraCell)
+  //     .endCell();
+    
+  //   // Forward TON amount and total amount from createSwap.ts
+  //   const forwardTonAmount = toNano("0.02");
+  //   const totalTonAmount = toNano("0.1");
+      
+  //   // Try direct JettonWallet interaction, replicating createSwap.ts
+  //   const sender = treasury.getSender();
+    
+  //   // Create the jetton transfer message exactly like in createSwap.ts
+  //   const jettonTransferBody = beginCell()
+  //     .storeUint(JETTON_TRANSFER_OP, 32)  // transfer op code (0x0f8a7ea5)
+  //     .storeUint(0, 64)                   // query_id
+  //     .storeCoins(tokenAmount)            // token amount
+  //     .storeAddress(fluida.address)       // destination
+  //     .storeAddress(fluida.address)       // response destination
+  //     .storeBit(0)                        // custom payload flag
+  //     .storeCoins(forwardTonAmount)       // forward TON amount
+  //     .storeBit(1)                        // forward payload flag (1 = referenced cell)
+  //     .storeRef(depositNotificationPayload) // the notification
+  //     .endCell();
+    
+  //   // Log the payload for debugging
+  //   console.log("Jetton Transfer Body (hex):", jettonTransferBody.toBoc().toString("hex"));
+    
+  //   // Send the message directly - if this doesn't work, we'll implement a workaround
+  //   try {
+  //     await blockchain.provider(jettonWalletAddress).internal(sender, {
+  //       value: totalTonAmount, 
+  //       sendMode: SendMode.PAY_GAS_SEPARATELY,
+  //       body: jettonTransferBody
+  //     });
+      
+  //     // If JettonWallet doesn't work, manually simulate the deposit below:
+  //     // await fluida.sendInternalMessage(sender, toNano("0.1"), depositNotificationPayload);
+      
+  //     // Verify swap was created
+  //     const swapCounter = await fluida.get_swap_counter();
+  //     expect(Number(swapCounter)).toEqual(1);
+      
+  //     // Now complete the swap with the correct preimage
+  //     const completeBody = beginCell()
+  //       .storeUint(OP_COMPLETE_SWAP, 32)
+  //       .storeUint(0, 256)
+  //       .storeUint(preimage, 256)
+  //       .endCell();
+      
+  //     await fluida.sendInternalMessage(recipient.getSender(), toNano("0.2"), completeBody);
+      
+  //     // Verify completion
+  //     const updatedSwapData = await fluida.get_swap(0);
+  //     expect(Number(updatedSwapData[5])).toEqual(1);
+      
+  //   } catch (error) {
+  //     console.error("Error during jetton transfer:", error);
+  //     // If jetton transfer fails, we can simulate the result by sending directly to Fluida
+  //     console.log("Falling back to direct deposit simulation");
+  //     await fluida.sendInternalMessage(sender, toNano("0.1"), depositNotificationPayload);
+      
+  //     // Continue with completion as above
+  //     const completeBody = beginCell()
+  //       .storeUint(OP_COMPLETE_SWAP, 32)
+  //       .storeUint(0, 256)
+  //       .storeUint(preimage, 256)
+  //       .endCell();
+      
+  //     await fluida.sendInternalMessage(recipient.getSender(), toNano("0.2"), completeBody);
+      
+  //     // Verify completion
+  //     const updatedSwapData = await fluida.get_swap(0);
+  //     expect(Number(updatedSwapData[5])).toEqual(1);
+  //   }
+  // });
+  
+  // it('should not complete swap with incorrect preimage', async () => {
+  //   // This test focuses on testing the incorrect preimage, not the JettonWallet
+  //   // so we'll use the direct deposit approach
+    
+  //   const initiator = treasury.address;
+  //   const recipientAddr = recipient.address;
+  //   const tokenAmount = toNano("1");
+  //   const correctPreimage = BigInt('0x' + '123456789'.padStart(64, '0'));
+  //   const hashLock = calculateHashLock(correctPreimage);
+  //   const currentTime = Math.floor(Date.now() / 1000);
+  //   const timeLock = BigInt(currentTime + 3600);
+    
+  //   // Create the extra cell
+  //   const extraCell = beginCell()
+  //     .storeUint(hashLock, 256)
+  //     .storeUint(timeLock, 64)
+  //     .endCell();
+    
+  //   // Create the deposit notification
+  //   const depositNotificationPayload = beginCell()
+  //     .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
+  //     .storeUint(tokenAmount, 128)
+  //     .storeAddress(initiator)
+  //     .storeRef(
+  //       beginCell()
+  //         .storeAddress(recipientAddr)
+  //         .endCell()
+  //     )
+  //     .storeRef(extraCell)
+  //     .endCell();
+    
+  //   // Send directly to Fluida
+  //   await fluida.sendInternalMessage(
+  //     treasury.getSender(),
+  //     toNano("0.1"),
+  //     depositNotificationPayload
+  //   );
+    
+  //   // Verify swap was created
+  //   const swapCounter = await fluida.get_swap_counter();
+  //   expect(Number(swapCounter)).toEqual(1);
+    
+  //   // Try to complete with incorrect preimage
+  //   const incorrectPreimage = BigInt('0x' + '987654321'.padStart(64, '0'));
+    
+  //   const completeBody = beginCell()
+  //     .storeUint(OP_COMPLETE_SWAP, 32)
+  //     .storeUint(0, 256)
+  //     .storeUint(incorrectPreimage, 256)
+  //     .endCell();
+    
+  //   // Send the complete message with the wrong preimage
+  //   await fluida.sendInternalMessage(
+  //     recipient.getSender(), 
+  //     toNano("0.2"), 
+  //     completeBody
+  //   );
+    
+  //   // Verify that the swap is still pending
+  //   const updatedSwapData = await fluida.get_swap(0);
+  //   expect(Number(updatedSwapData[5])).toEqual(0);
+  // });
 
-  it('should accept deposits from any user when deployed with the JETTON MASTER address', async () => {
-    console.log('🧪 Running deposit test with Fluida deployed using the JETTON MASTER address...');
-
-    // 1. MINT TOKENS FOR USER1:
-    const mintAmount = tonNanoTon(0.01);
-    const { actionList: mintActions } = await minterContract.contract.sendInternalMessage(
-      internalMessage({
-        from: OWNER_ADDRESS,
-        body: JettonMinter.mintBody(PARTICIPANT_ADDRESS_1, mintAmount),
-      })
-    );
-    console.log('💸 Mint actions:', mintActions);
-
-    // 2. DEPLOY USER1’S JETTON WALLET:
-    const user1JettonWallet = await getJWalletContract(PARTICIPANT_ADDRESS_1, minterContract.address);
-    // Process the mint action so that user1's wallet is credited.
-    await user1JettonWallet.contract.sendInternalMessage(
-      actionToMessage(minterContract.address, mintActions[0])
-    );
-    const { balance: initialBalance } = parseJettonWalletDetails(
-      await user1JettonWallet.contract.invokeGetMethod('get_wallet_data', [])
-    );
-    console.log('🔎 User1 wallet balance after mint:', initialBalance);
-
-    // 3. DEPLOY FLUIDA WITH THE JETTON MASTER ADDRESS:
-    fluida = blockchain.openContract(
-      Fluida.createFromConfig(
-        {
-          jettonWallet: Address.parse(minterContract.address.toString()),
-          swapCounter: 0n,
-          swaps: emptySwaps,
-        },
-        fluidaCode
-      )
-    );
-    await fluida.sendDeploy(deployer.getSender(), toNano('0.05'));
-    console.log('✅ Fluida contract deployed with JETTON MASTER address:', minterContract.address.toString());
-
-    // 4. PREPARE DEPOSIT DETAILS:
-    const depositAmount = toNano(0.004); // depositAmount as bigint (from @ton/core)
-    const preimage = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn;
-    const hashLock = computeHashLock(preimage);
-    const currentTime = BigInt(Math.floor(Date.now() / 1000));
-    const timeLock = currentTime + 3600n;
-    console.log(`💰 Deposit amount: ${depositAmount}`);
-    console.log(`🔒 HashLock: ${hashLock}`);
-    console.log(`⏰ TimeLock: ${timeLock}`);
-
-    // Build the deposit notification payload using @ton/core.
-    // Use PARTICIPANT_ADDRESS_1 as depositor and PARTICIPANT_ADDRESS_2 as recipient.
-
-
-    console.log("minterAddress", minterContract.address);
-    const OP_DEPOSIT_NOTIFICATION = 0xDEADBEEFn; // 3735928559
-    const depositNotificationPayload = beginCell()
-      .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
-      .storeUint(depositAmount, 128)
-      .storeAddress(Address.parse(minterContract.address.toString())) // depositor: use minter address!
-      .storeRef(
-        beginCell()
-          .storeAddress(Address.parse(PARTICIPANT_ADDRESS_2.toString())) // recipient: user2
-          .endCell()
-      )
+  it('should process direct jetton transfer notification', async () => {
+    // Addresses needed for the test
+    const senderAddress = treasury.address;
+    const receiverAddress = recipient.address;
+    
+    // Parameters similar to createSwap.ts
+    const tokenAmount = toNano("0.05");
+    const forwardTonAmount = toNano("0.02");
+    
+    // Generate hashLock and timeLock
+    const preimage = BigInt('0x' + '123456789'.padStart(64, '0'));
+    const hashLock = calculateHashLock(preimage);
+    const currentTimestamp = Math.floor(Date.now() / 1000);
+    const timeLock = BigInt(currentTimestamp + 3600); // 1 hour from now
+    
+    // Create the extra cell for hashLock and timeLock
+    const extraCell = beginCell()
       .storeUint(hashLock, 256)
       .storeUint(timeLock, 64)
       .endCell();
-    console.log('📦 Deposit notification payload built:', depositNotificationPayload.toString());
-
-
-
-
-    const storedJettonWallet = await fluida.getJettonWallet();
-    console.log("Stored jetton wallet:", storedJettonWallet.toString());
-    console.log("Expected jetton wallet:", minterContract.address);
-    // expect(storedJettonWallet.toFriendly?()).toEqual(minterContract.address.toFriendly());
-
-
-    // Build and send the deposit message directly.
-    const depositMsg = internal({
-      to: fluida.address,       // @ton/core Address of Fluida
-      value: toNano('0.05'),      // using @ton/core toNano -> returns bigint
-      body: depositNotificationPayload, // payload begins with OP_DEPOSIT_NOTIFICATION
-    });
-    // Rebuild the message info so that `src` is defined.
-    const depositMsgFixed = {
-      ...depositMsg,
-      info: {
-        ...depositMsg.info,
-        src: Address.parse(minterContract.address.toString()),
-        // src: Address.parse(PARTICIPANT_ADDRESS_2.toString()),
-      }
-    } as import('@ton/core').Message;
-    // console.log('📨 Sending deposit notification with src =', depositMsgFixed.info.src!.toString());
-    await blockchain.sendMessage(depositMsgFixed);
-
-
-    // 6. VERIFY THAT THE DEPOSIT WAS PROCESSED:
-    const { balance: afterBalance } = parseJettonWalletDetails(
-      await user1JettonWallet.contract.invokeGetMethod('get_wallet_data', [])
-    );
-    console.log('🔎 User1 wallet balance after transfer:', afterBalance);
-
-    // Verify that Fluida has registered a new swap.
-    const swapCounter = await fluida.getSwapCounter();
-    console.log('🔍 Fluida swap counter:', swapCounter);
-    expect(swapCounter).toBe(1n);
-
-    console.log('✅ Deposit test passed: deposit accepted and swap created using the JETTON MASTER address.');
-  });
-
-  it('should reject deposits from an unaccepted jetton wallet', async () => {
-    console.log('🧪 Running deposit rejection test with an unaccepted jetton wallet...');
-
-    // 1. MINT TOKENS FOR USER1:
-    const mintAmount = tonNanoTon(0.01);
-    const { actionList: mintActions } = await minterContract.contract.sendInternalMessage(
-      internalMessage({
-        from: OWNER_ADDRESS,
-        body: JettonMinter.mintBody(PARTICIPANT_ADDRESS_1, mintAmount),
-      })
-    );
-    console.log('💸 Mint actions:', mintActions);
-
-    // 2. DEPLOY USER1’S WRONG JETTON WALLET:
-    // Use a wrong jetton master that does not match the accepted one.
-    const wrongJettonMaster = randomAddress("wrong_jetton_master");
-    const user1WrongWallet = await getJWalletContract(PARTICIPANT_ADDRESS_1, wrongJettonMaster);
-    // Process the mint action so that the wrong wallet is credited.
-    await user1WrongWallet.contract.sendInternalMessage(
-      actionToMessage(minterContract.address, mintActions[0])
-    );
-    const { balance: initialBalance } = parseJettonWalletDetails(
-      await user1WrongWallet.contract.invokeGetMethod('get_wallet_data', [])
-    );
-    console.log('🔎 User1 wrong wallet balance after mint:', initialBalance);
-
-    // 3. DEPLOY FLUIDA WITH THE ACCEPTED JETTON MASTER ADDRESS:
-    // Fluida expects deposits from the accepted jetton wallet (minterContract.address).
-    fluida = blockchain.openContract(
-      Fluida.createFromConfig(
-        {
-          jettonWallet: Address.parse(minterContract.address.toString()),
-          swapCounter: 0n,
-          swaps: emptySwaps,
-        },
-        fluidaCode
-      )
-    );
-    await fluida.sendDeploy(deployer.getSender(), toNano('0.05'));
-    console.log('✅ Fluida contract deployed with accepted jetton wallet:', minterContract.address.toString());
-
-    // 4. PREPARE DEPOSIT DETAILS:
-    const depositAmount = toNano(0.004); // depositAmount as bigint (from @ton/core)
-    const preimage = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn;
-    const hashLock = computeHashLock(preimage);
-    const currentTime = BigInt(Math.floor(Date.now() / 1000));
-    const timeLock = currentTime + 3600n;
-    console.log(`💰 Deposit amount: ${depositAmount}`);
-    console.log(`🔒 HashLock: ${hashLock}`);
-    console.log(`⏰ TimeLock: ${timeLock}`);
-
-    const OP_DEPOSIT_NOTIFICATION = 0xDEADBEEFn; // 3735928559
+    
+    // Create the deposit notification payload
     const depositNotificationPayload = beginCell()
       .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
-      .storeUint(depositAmount, 128)
-      .storeAddress(Address.parse(PARTICIPANT_ADDRESS_1.toString())) // depositor: user1
+      .storeUint(tokenAmount, 128)
+      .storeAddress(senderAddress)  // Depositor/Initiator
       .storeRef(
         beginCell()
-          .storeAddress(Address.parse(PARTICIPANT_ADDRESS_2.toString())) // recipient: user2
+          .storeAddress(receiverAddress)  // Recipient
           .endCell()
       )
-      .storeUint(hashLock, 256)
-      .storeUint(timeLock, 64)
+      .storeRef(extraCell)  // Reference with hashLock and timeLock
       .endCell();
-    console.log('📦 Deposit notification payload built:', depositNotificationPayload.toString());
-
-    // 5. BUILD AND SEND THE DEPOSIT MESSAGE FROM THE WRONG WALLET:
-    const depositMsg = internal({
-      to: fluida.address,       // @ton/core Address of Fluida
-      value: toNano('0.05'),      // using @ton/core toNano -> returns bigint
-      body: depositNotificationPayload, // payload beginning with OP_DEPOSIT_NOTIFICATION
-    });
-    // Set src to the wrong wallet's address.
-    const depositMsgFixed = {
-      ...depositMsg,
-      info: {
-        ...depositMsg.info,
-        src: Address.parse(user1WrongWallet.address.toString()),
-      }
-    } as import('@ton/core').Message;
-    console.log('📨 Sending deposit from wrong wallet with src =', depositMsgFixed.info.src!.toString());
-    await blockchain.sendMessage(depositMsgFixed);
-    console.log('📤 Deposit message sent from wrong wallet.');
-
-    // 6. VERIFY THAT THE DEPOSIT WAS NOT PROCESSED:
-    const { balance: afterBalance } = parseJettonWalletDetails(
-      await user1WrongWallet.contract.invokeGetMethod('get_wallet_data', [])
-    );
-    console.log('🔎 User1 wrong wallet balance after deposit attempt:', afterBalance);
-    // Expect that the wallet balance remains unchanged.
-    expect(afterBalance.toString()).toBe(initialBalance.toString());
-
-    // Also, check that Fluida's swap counter remains zero.
-    const swapCounter = await fluida.getSwapCounter();
-    console.log('🔍 Fluida swap counter (should be 0):', swapCounter);
-    expect(swapCounter).toBe(0n);
-
-    console.log('✅ Deposit rejection test passed: deposit not accepted as expected.');
-  });
-
-  it('should create a swap with correct data and, when completed, transfer tokens to the recipient', async () => {
-    console.log('🧪 Running swap creation and completion test...');
-  
-    // Redeploy Fluida with the accepted jetton master address.
-    fluida = blockchain.openContract(
-      Fluida.createFromConfig(
-        {
-          jettonWallet: Address.parse(minterContract.address.toString()),
-          swapCounter: 0n,
-          swaps: emptySwaps,
-        },
-        fluidaCode
-      )
-    );
-    await fluida.sendDeploy(deployer.getSender(), toNano('0.05'));
-    console.log('✅ Fluida redeployed with accepted jetton wallet:', minterContract.address.toString());
-  
-    // Deploy the recipient's (user2's) JettonWallet contract.
-    const user2JettonWallet = await getJWalletContract(PARTICIPANT_ADDRESS_2, minterContract.address);
-    console.log('✅ User2 jetton wallet deployed:', user2JettonWallet.address.toString());
-  
-    // Prepare deposit details.
-    const depositAmount = toNano(0.005);
-  
-    // Generate a random 256-bit preimage and calculate its SHA256 hash lock
-    const preimageBuffer = crypto.randomBytes(32);
-    const preimage = BigInt('0x' + preimageBuffer.toString('hex'));
-    const preimageHex = preimage.toString(16).padStart(64, '0');
-    const hashBuffer = crypto.createHash('sha256')
-      .update(Buffer.from(preimageHex, 'hex'))
-      .digest();
-    const hashLock = BigInt('0x' + hashBuffer.toString('hex'));
-  
-    const currentTime = BigInt(Math.floor(Date.now() / 1000));
-    const timeLock = currentTime + 3600n; // 1 hour later
-  
-    console.log(`💰 Deposit Amount: ${depositAmount}`);
-    console.log(`🔑 Preimage: ${preimage}`);
-    console.log(`🔒 Computed HashLock: ${hashLock}`);
-    console.log(`⏰ TimeLock: ${timeLock}`);
-  
-    // Build deposit notification payload.
-    const OP_DEPOSIT_NOTIFICATION = 0xDEADBEEFn; // 3735928559
-    const depositNotificationPayload = beginCell()
-      .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
-      .storeUint(depositAmount, 128)
-      .storeAddress(Address.parse(minterContract.address.toString())) // depositor: accepted jetton wallet
-      .storeRef(
-        beginCell()
-          .storeAddress(Address.parse(PARTICIPANT_ADDRESS_2.toString())) // recipient: user2
-          .endCell()
-      )
-      .storeUint(hashLock, 256)
-      .storeUint(timeLock, 64)
+    
+    // Create the jetton transfer notification exactly as it would arrive from jetton wallet
+    const JETTON_TRANSFER_NOTIFICATION = 0x7362d09cn;
+    const notificationBody = beginCell()
+      .storeUint(JETTON_TRANSFER_NOTIFICATION, 32)  // op code for jetton transfer notification
+      .storeUint(0, 64)                             // query_id (0 in this case)
+      .storeCoins(tokenAmount)                      // amount of jettons transferred
+      .storeAddress(senderAddress)                  // sender address (jetton wallet owner)
+      .storeAddress(senderAddress)                  // from address (original sender)
+      .storeRef(depositNotificationPayload)         // forward payload as reference
       .endCell();
-    console.log('📦 Deposit notification payload built:', depositNotificationPayload.toString());
-  
-    // Send the deposit notification message.
-    const depositMsg = internal({
-      to: fluida.address,
-      value: toNano('0.05'),
-      body: depositNotificationPayload,
-    });
-    const depositMsgFixed = {
-      ...depositMsg,
-      info: {
-        ...depositMsg.info,
-        src: Address.parse(minterContract.address.toString()),
-      }
-    } as import('@ton/core').Message;
-    await blockchain.sendMessage(depositMsgFixed);
-    console.log('📨 Deposit notification sent.');
-  
-    // Verify that a new swap was created.
-    const swapCounter = await fluida.getSwapCounter();
-    console.log('🔍 Swap counter after deposit:', swapCounter);
-    expect(swapCounter).toBe(1n);
-  
-    // Retrieve swap details (using swap id 0n).
-    const swap = await fluida.getSwap(0n);
-    console.log('📄 Retrieved Swap Details:');
-    console.log('   Initiator:', swap.initiator.toString());
-    console.log('   Recipient:', swap.recipient.toString());
-    console.log('   Amount:', swap.amount.toString());
-    console.log('   HashLock:', swap.hashLock.toString());
-    console.log('   TimeLock:', swap.timeLock.toString());
-    console.log('   IsCompleted:', swap.isCompleted);
-  
-    expect(swap.amount).toEqual(depositAmount);
-    expect(swap.hashLock).toEqual(hashLock);
-    expect(swap.timeLock).toEqual(timeLock);
-    expect(swap.isCompleted).toEqual(false);
-  
-    // Build the complete swap payload with the generated preimage.
-    const OP_COMPLETE_SWAP = 2271560481; // 0x87654321
-    const completeSwapPayload = beginCell()
+    
+    // Simulate receiving the notification at the Fluida contract from the jetton wallet
+    const result = await fluida.sendInternalMessage(
+      treasury.getSender(), // We use the treasury as sender but with a specific message
+      forwardTonAmount,     // Forward amount from the transfer
+      notificationBody
+    );
+    
+    // Verify a swap was created
+    const swapCounter = await fluida.get_swap_counter();
+    expect(Number(swapCounter)).toEqual(1);
+    
+    // Get the swap data to verify it was stored correctly
+    const swapData = await fluida.get_swap(0);
+    expect(swapData[0].toString()).toEqual(senderAddress.toString());
+    expect(swapData[1].toString()).toEqual(receiverAddress.toString());
+    expect(swapData[2].toString()).toEqual(tokenAmount.toString());
+    expect(swapData[3].toString()).toEqual(hashLock.toString());
+    expect(swapData[4].toString()).toEqual(timeLock.toString());
+    expect(Number(swapData[5])).toEqual(0); // Should be in pending state
+    
+    // Now complete the swap with the correct preimage
+    const completeBody = beginCell()
       .storeUint(OP_COMPLETE_SWAP, 32)
-      .storeUint(0n, 256) // swapId as bigint
-      .storeUint(preimage, 256)
+      .storeUint(0, 256)        // swapId = 0
+      .storeUint(preimage, 256) // correct preimage
       .endCell();
-    console.log('📦 Complete swap payload built:', completeSwapPayload.toString());
-  
-    // Send the complete swap message.
-    const completeSwapMsg = internal({
-      to: fluida.address,
-      value: toNano('0.05'),
-      body: completeSwapPayload,
-    });
-    const completeSwapMsgFixed = {
-      ...completeSwapMsg,
-      info: {
-        ...completeSwapMsg.info,
-        src: Address.parse(PARTICIPANT_ADDRESS_1.toString()),
-      }
-    } as import('@ton/core').Message;
-    await blockchain.sendMessage(completeSwapMsgFixed);
-    console.log('📨 Complete swap message sent.');
-  
-    // Verify that the swap is now marked as completed.
-    const updatedSwap = await fluida.getSwap(0n);
-    console.log('🔍 Updated swap isCompleted flag:', updatedSwap.isCompleted);
-    expect(updatedSwap.isCompleted).toEqual(true);
-  
-    // Verify that the token transfer was executed:
-    // The recipient's jetton wallet (user2) should have a balance equal to the depositAmount.
-    const { balance: user2Balance } = parseJettonWalletDetails(
-      await user2JettonWallet.contract.invokeGetMethod('get_wallet_data', [])
+    
+    // Send the complete message from the recipient
+    await fluida.sendInternalMessage(
+      recipient.getSender(), 
+      toNano("0.2"), 
+      completeBody
     );
-    console.log('💰 User2 jetton wallet balance after swap completion:', user2Balance);
-    expect(user2Balance).toEqual(depositAmount);
-  
-    console.log('✅ Swap creation and completion test passed.');
+    
+    // Verify that the swap is marked as completed
+    const updatedSwapData = await fluida.get_swap(0);
+    expect(Number(updatedSwapData[5])).toEqual(1);
   });
-  
-  
-
-  // Further tests (e.g., completeSwap, refundSwap) can be added below.
 });
