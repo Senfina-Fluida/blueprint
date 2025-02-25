@@ -1,13 +1,19 @@
 // scripts/readData.ts
 import { Address, beginCell, Cell } from '@ton/core';
 import { Fluida } from '../wrappers/FluidaDeploy';
+import { getFluidaAddress } from './utils/getFluidaAddress';
+
 
 // If your Node.js version does not include fetch natively, uncomment the following line and install node-fetch:
 // import fetch from 'node-fetch';
 
 /**
  * A minimal TupleReader implementation to satisfy the wrapper.
+ * 
+ * 
  */
+
+
 class SimpleTupleReader {
   private items: any[];
   private index = 0;
@@ -71,7 +77,7 @@ function convertParam(param: any): string {
 const TON_CONSOLE_ENDPOINT = 'https://ton-testnet.core.chainstack.com/7f51376bae293d5148c231c1270a74f9/api/v2/runGetMethod';
 
 // Replace with your actual deployed Fluida contract address.
-const fluidaAddress = Address.parse("EQBQJn8uJwDldWNSXbsCbtk8VAAcxBE_QN8p97u0ctSirhh0");
+const fluidaAddress = Address.parse(getFluidaAddress());
 
 
 const consoleProvider = {
@@ -87,7 +93,7 @@ const consoleProvider = {
     };
     const response = await fetch(TON_CONSOLE_ENDPOINT, {
       method: 'POST',
-      headers: { 
+      headers: {
         'accept': 'application/json',
         'Content-Type': 'application/json'
       },

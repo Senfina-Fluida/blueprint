@@ -1,5 +1,8 @@
 import { toNano, beginCell, Address, SendMode } from '@ton/core';
 import { NetworkProvider } from '@ton/blueprint';
+import { getJettonWalletAddress } from './utils/getwalletAddress'; // adjust path as needed
+
+import { getFluidaAddress } from './utils/getFluidaAddress';
 
 /**
  *  OP_INITIALIZE = 1 (from Fluida.fc)
@@ -9,15 +12,25 @@ import { NetworkProvider } from '@ton/blueprint';
  *    2) The new jettonWallet address (in_msg_body~load_msg_addr())
  *
  *  So our message body = [op(32 bits), newJettonWallet(address)]
+ * 
+ * 
  */
+
+
 
 export async function run(provider: NetworkProvider) {
   // 1) The deployed Fluida contract address
-  const fluidaAddress = Address.parse("EQBQJn8uJwDldWNSXbsCbtk8VAAcxBE_QN8p97u0ctSirhh0");
-  
-  // 2) The new Jetton Wallet address you want to store in Fluida
-  const newJettonWalletAddress = Address.parse("EQDqVx54LcPErnxAoNeKO0JKx7ESgUKdPvTSrukOyMFA5fTC");
+  const fluidaAddress = Address.parse(getFluidaAddress());
 
+  // 2) The new Jetton Wallet address you want to store in Fluida
+  let newJettonWalletAddress: Address;
+  try {
+    newJettonWalletAddress = await getJettonWalletAddress(getFluidaAddress());
+    console.log("Calculated jetton wallet address:", newJettonWalletAddress.toString());
+  } catch (error) {
+    console.error("❌ Error calculating jetton wallet address:", error);
+    process.exit(1);
+  }
   // 3) Create the message body:
   //    - Store OP_INITIALIZE (which is 1 in your contract).
   //    - Store the new jetton wallet address right after.

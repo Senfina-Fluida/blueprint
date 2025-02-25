@@ -390,4 +390,96 @@ describe('Fluida Contract Tests', () => {
     const updatedSwapData = await fluida.get_swap(0);
     expect(Number(updatedSwapData[5])).toEqual(1);
   });
+
+  // it('should create two swaps and swapCounter equals 2', async () => {
+  //   // Addresses for the test
+  //   const senderAddress = treasury.address;
+  //   const receiverAddress = recipient.address;
+  //   const currentTimestamp = Math.floor(Date.now() / 1000);
+  
+  //   // ----- First Swap -----
+  //   const tokenAmount1 = toNano("0.05");
+  //   const preimage1 = BigInt('0x' + '123456789'.padStart(64, '0'));
+  //   const hashLock1 = calculateHashLock(preimage1);
+  //   const timeLock1 = BigInt(currentTimestamp + 3600); // 1 hour later
+  
+  //   // Build extra cell for first swap: contains hashLock and timeLock
+  //   const extraCell1 = beginCell()
+  //     .storeUint(hashLock1, 256)
+  //     .storeUint(timeLock1, 64)
+  //     .endCell();
+  
+  //   // Build deposit notification payload for first swap
+  //   const depositNotificationPayload1 = beginCell()
+  //     .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
+  //     .storeUint(tokenAmount1, 128)
+  //     .storeAddress(senderAddress) // Depositor / Initiator
+  //     .storeRef(
+  //       beginCell()
+  //         .storeAddress(receiverAddress) // Recipient
+  //         .endCell()
+  //     )
+  //     .storeRef(extraCell1)
+  //     .endCell();
+  
+  //   // Send first deposit notification
+  //   await fluida.sendInternalMessage(
+  //     treasury.getSender(),
+  //     toNano("0.1"),
+  //     depositNotificationPayload1
+  //   );
+  
+  //   // ----- Second Swap -----
+  //   const tokenAmount2 = toNano("0.07");
+  //   const preimage2 = BigInt('0x' + '987654321'.padStart(64, '0'));
+  //   const hashLock2 = calculateHashLock(preimage2);
+  //   const timeLock2 = BigInt(currentTimestamp + 7200); // 2 hours later
+  
+  //   // Build extra cell for second swap
+  //   const extraCell2 = beginCell()
+  //     .storeUint(hashLock2, 256)
+  //     .storeUint(timeLock2, 64)
+  //     .endCell();
+  
+  //   // Build deposit notification payload for second swap
+  //   const depositNotificationPayload2 = beginCell()
+  //     .storeUint(OP_DEPOSIT_NOTIFICATION, 32)
+  //     .storeUint(tokenAmount2, 128)
+  //     .storeAddress(senderAddress)
+  //     .storeRef(
+  //       beginCell()
+  //         .storeAddress(receiverAddress)
+  //         .endCell()
+  //     )
+  //     .storeRef(extraCell2)
+  //     .endCell();
+  
+  //   // Send second deposit notification
+  //   await fluida.sendInternalMessage(
+  //     treasury.getSender(),
+  //     toNano("0.1"),
+  //     depositNotificationPayload2
+  //   );
+  
+  //   // Verify that the swap counter has incremented to 2.
+  //   const swapCounter = await fluida.get_swap_counter();
+  //   expect(Number(swapCounter)).toEqual(2);
+  
+  // //   // Optionally, read and log both swaps:
+  // //   for (let i = 0n; i < swapCounter; i++) {
+  // //     const exists = await fluida.has_swap(consoleProvider as any, i);
+  // //     console.log(`Swap id ${i.toString()} exists: ${exists}`);
+  // //     if (exists) {
+  // //       const swap = await fluida.get_swap(consoleProvider as any, i);
+  // //       console.log(`Swap id ${i.toString()}:`);
+  // //       console.log("  Initiator:", swap.initiator.toString());
+  // //       console.log("  Recipient:", swap.recipient.toString());
+  // //       console.log("  Amount:", swap.amount.toString());
+  // //       console.log("  HashLock:", swap.hashLock.toString());
+  // //       console.log("  TimeLock:", swap.timeLock.toString());
+  // //       console.log("  Completed:", swap.isCompleted);
+  // //     }
+  // //   }
+  // });
+  
 });

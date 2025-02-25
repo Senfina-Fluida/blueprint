@@ -4,6 +4,9 @@ import { NetworkProvider } from '@ton/blueprint';
 import { calculateHashLock } from './utils/hashHelper';
 import readline from 'readline';
 
+import { getFluidaAddress } from './utils/getFluidaAddress';
+
+
 // Helper function: prompt for user input
 function prompt(question: string): Promise<string> {
   const rl = readline.createInterface({
@@ -18,9 +21,10 @@ function prompt(question: string): Promise<string> {
   });
 }
 
+
 export async function run(provider: NetworkProvider) {
   // Connect to Fluida contract using its address.
-  const fluidaAddress = Address.parse("EQC58-q-q7zgtV2wcqQk5CQQvf_S9rGn8wcYnvXKhcjPrZRX");
+  const fluidaAddress = Address.parse(getFluidaAddress());
 
   const fluida = provider.open(new Fluida(fluidaAddress));
 

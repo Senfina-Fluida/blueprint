@@ -1,6 +1,8 @@
 import { toNano, Dictionary, Address } from '@ton/core';
 import { Fluida, FluidaConfig } from '../wrappers/FluidaDeploy';
 import { compile, NetworkProvider } from '@ton/blueprint';
+import fs from 'fs';
+import path from 'path';
 
 export async function run(provider: NetworkProvider) {
     try {
@@ -8,8 +10,8 @@ export async function run(provider: NetworkProvider) {
         console.log('🔧 Compiling Fluida contract...');
         const fluidaCode = await compile('Fluida');
 
-        // 2) Initialize an empty swaps dictionary
-        console.log('📚 Initializing empty swaps dictionary...');
+        // 2) Initialize empty dictionaries for swaps and hashlock_map
+        console.log('📚 Initializing empty swaps and hashlock_map dictionaries...');
         const emptySwaps = Dictionary.empty<bigint, {
             initiator: Address;
             recipient: Address;
@@ -18,19 +20,21 @@ export async function run(provider: NetworkProvider) {
             timeLock: bigint;
             isCompleted: boolean;
         }>(Dictionary.Keys.BigInt(256));
-        console.log('✅ Empty swaps dictionary initialized.');
+        const emptyHashlockMap = Dictionary.empty<bigint, bigint>(Dictionary.Keys.BigInt(256));
+        console.log('✅ Empty dictionaries initialized.');
 
-        // 3) Configure the Fluida contract
-        // Here we use the sender's address as the approved jetton wallet.
+        // 3) Configure the Fluida contract including hashlock_map.
         const fluidaConfig: FluidaConfig = {
-            jettonWallet: Address.parse("kQDKqoHJ5sYKwB8CvPmdFSzOmDDu3BI85on_ks6WXnriIhSY"),
+            jettonWallet: Address.parse("EQCw-TMDSxfgF3Pkzu59ZCNh5cTonlSwNMk2hyI9znwUQ7V0"),
             swapCounter: 0n,
             swaps: emptySwaps,
+            hashlock_map: emptyHashlockMap,
         };
         console.log('📋 Configuring Fluida with:', {
             jettonWallet: fluidaConfig.jettonWallet.toString(),
             swapCounter: fluidaConfig.swapCounter.toString(),
             swaps: 'Empty Dictionary',
+            hashlock_map: 'Empty Dictionary',
         });
 
         // 4) Deploy the Fluida contract
@@ -44,9 +48,15 @@ export async function run(provider: NetworkProvider) {
         await provider.waitForDeploy(fluida.address);
         console.log('✅ Fluida deployed successfully at address:', fluida.address.toString());
 
+        // Save the deployed address to a file for later use
+        const deployedAddress = fluida.address.toString();
+        const filePath = path.join(__dirname, 'utils', 'fluidaAddress.txt');
+        fs.writeFileSync(filePath, deployedAddress, { encoding: 'utf8' });
+        console.log(`💾 Deployed address saved to ${filePath}`);
+
         // 5) Verification of Deployment
         console.log('\n--- Deployment Summary ---');
-        console.log('📦 Fluida Address:', fluida.address.toString());
+        console.log('📦 Fluida Address:', deployedAddress);
 
         const storedJettonWallet = await fluida.getJettonWallet();
         console.log('🔗 Stored jettonWallet in Fluida:', storedJettonWallet.toString());
